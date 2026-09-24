@@ -1,0 +1,45 @@
+{
+  "_fixture": {
+    "name": "status-update",
+    "description": "Delivery status webhook. Expected: update the outbound message row, no agent run. Also covers the failed case so error handling has a fixture.",
+    "expected": {
+      "agent_run": false,
+      "on_failed": "log, mark the outbound message failed, retry per policy, alert if a template is rejected"
+    }
+  },
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "WABA_ID_PLACEHOLDER",
+      "changes": [
+        {
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "256700000000",
+              "phone_number_id": "PHONE_NUMBER_ID_PLACEHOLDER"
+            },
+            "statuses": [
+              {
+                "id": "wamid.TEST_OUTBOUND_0001",
+                "status": "delivered",
+                "timestamp": "1790000300",
+                "recipient_id": "256770000001",
+                "conversation": {
+                  "id": "CONVERSATION_ID_PLACEHOLDER",
+                  "origin": { "type": "service" }
+                },
+                "pricing": {
+                  "billable": true,
+                  "pricing_model": "CBP",
+                  "category": "service"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

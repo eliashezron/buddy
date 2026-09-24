@@ -1,0 +1,54 @@
+{
+  "_fixture": {
+    "name": "button-approval",
+    "description": "User taps the Confirm button on an approval message. Expected: look up the pending action by id, check it has not expired (15 min), execute it, reply with a receipt.",
+    "expected": {
+      "action_lookup_key": "approve:ACTION_ID_PLACEHOLDER",
+      "on_expired": "do not execute; ask the user to confirm again",
+      "on_already_executed": "idempotent; reply with the existing result"
+    }
+  },
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "WABA_ID_PLACEHOLDER",
+      "changes": [
+        {
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "256700000000",
+              "phone_number_id": "PHONE_NUMBER_ID_PLACEHOLDER"
+            },
+            "contacts": [
+              {
+                "profile": { "name": "Elias" },
+                "wa_id": "256770000001"
+              }
+            ],
+            "messages": [
+              {
+                "from": "256770000001",
+                "id": "wamid.TEST_BUTTON_0001",
+                "timestamp": "1790000200",
+                "type": "interactive",
+                "context": {
+                  "from": "256700000000",
+                  "id": "wamid.TEST_APPROVAL_PROMPT_0001"
+                },
+                "interactive": {
+                  "type": "button_reply",
+                  "button_reply": {
+                    "id": "approve:ACTION_ID_PLACEHOLDER",
+                    "title": "Confirm"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

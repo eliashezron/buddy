@@ -1,0 +1,52 @@
+{
+  "_fixture": {
+    "name": "book-meeting",
+    "description": "Inbound text message asking to book a meeting. Expected: agent proposes create_calendar_event and sends an interactive approval message.",
+    "expected": {
+      "tool": "create_calendar_event",
+      "args": {
+        "title": "Coffee with Amina",
+        "startsAt": "<next day> 10:00 in users.timezone",
+        "durationMins": 30
+      },
+      "risk": "low_write",
+      "outbound": "interactive buttons: Confirm / Change time / Cancel"
+    },
+    "headers": {
+      "X-Hub-Signature-256": "sha256=<compute over the raw body with APP_SECRET at replay time>"
+    }
+  },
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "WABA_ID_PLACEHOLDER",
+      "changes": [
+        {
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "256700000000",
+              "phone_number_id": "PHONE_NUMBER_ID_PLACEHOLDER"
+            },
+            "contacts": [
+              {
+                "profile": { "name": "Elias" },
+                "wa_id": "256770000001"
+              }
+            ],
+            "messages": [
+              {
+                "from": "256770000001",
+                "id": "wamid.TEST_BOOK_MEETING_0001",
+                "timestamp": "1790000000",
+                "type": "text",
+                "text": { "body": "book coffee with Amina tomorrow 10am" }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

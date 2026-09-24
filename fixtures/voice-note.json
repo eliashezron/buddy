@@ -1,0 +1,50 @@
+{
+  "_fixture": {
+    "name": "voice-note",
+    "description": "Inbound voice note. Expected: download media by id, transcribe, then handle as text. Transcript in this fixture is code-switched English/Luganda.",
+    "expected": {
+      "pipeline": ["fetch media url", "download with bearer token", "asr", "agent run"],
+      "transcript_stub": "Nyabo, what's urgent today? And move my 3pm to tomorrow.",
+      "tools": ["list_upcoming", "move_calendar_event"],
+      "note": "move_calendar_event is low_write; confirm the absolute new date in the reply"
+    }
+  },
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "WABA_ID_PLACEHOLDER",
+      "changes": [
+        {
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "256700000000",
+              "phone_number_id": "PHONE_NUMBER_ID_PLACEHOLDER"
+            },
+            "contacts": [
+              {
+                "profile": { "name": "Elias" },
+                "wa_id": "256770000001"
+              }
+            ],
+            "messages": [
+              {
+                "from": "256770000001",
+                "id": "wamid.TEST_VOICE_0001",
+                "timestamp": "1790000100",
+                "type": "audio",
+                "audio": {
+                  "id": "MEDIA_ID_PLACEHOLDER",
+                  "mime_type": "audio/ogg; codecs=opus",
+                  "sha256": "PLACEHOLDER_SHA256",
+                  "voice": true
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
