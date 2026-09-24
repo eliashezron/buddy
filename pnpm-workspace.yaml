@@ -1,0 +1,8 @@
+packages:
+  - apps/*
+  - packages/*
+
+# Install scripts are blocked by default. Allow only native binaries we need.
+allowBuilds:
+  esbuild: true
+  msgpackr-extract: true

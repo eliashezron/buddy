@@ -1,0 +1,31 @@
+{
+  "name": "whatsapp-assistant",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.6.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @wa/api --filter @wa/worker --filter @wa/web dev",
+    "build": "pnpm -r build",
+    "test": "vitest run",
+    "typecheck": "pnpm -r typecheck && tsc -p tsconfig.scripts.json",
+    "evals": "pnpm --filter @wa/agent evals",
+    "db:generate": "pnpm --filter @wa/db generate",
+    "db:migrate": "pnpm --filter @wa/db migrate",
+    "replay": "tsx --conditions=development --env-file-if-exists=.env scripts/replay.ts"
+  },
+  "devDependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
+    "@types/node": "^24.0.0",
+    "@wa/core": "workspace:*",
+    "@wa/db": "workspace:*",
+    "@wa/tools": "workspace:*",
+    "@wa/whatsapp": "workspace:*",
+    "@wa/worker": "workspace:*",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.1"
+  }
+}
