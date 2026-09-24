@@ -74,12 +74,25 @@ maintenance.on('error', (err) => logger.error({ err }, 'maintenance worker error
 
 logger.info({ queues: [QUEUES.inbound, QUEUES.maintenance], channels: Object.keys(channels), model: config.AGENT_MODEL }, 'worker started')
 
+/** Stay under the usual SIGTERM→SIGKILL window of hosting platforms (often 30 s). */
+const SHUTDOWN_GRACE_MS = 15_000
+
 let shuttingDown = false
 async function shutdown(signal: string) {
   if (shuttingDown) return
   shuttingDown = true
-  logger.info({ signal }, 'shutting down; waiting for active jobs')
-  await Promise.all([inbound.close(), maintenance.close()])
+  logger.info({ signal, graceMs: SHUTDOWN_GRACE_MS }, 'shutting down; waiting for active jobs')
+  const closing = Promise.all([inbound.close(), maintenance.close()]).then(() => false)
+  const timedOut = await Promise.race([
+    closing,
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(true), SHUTDOWN_GRACE_MS).unref()),
+  ])
+  if (timedOut) {
+    // Platforms SIGKILL shortly after SIGTERM. Unfinished jobs return to the queue as
+    // stalled and are retried; the handler is idempotent (dedup on completed runs).
+    logger.warn({ graceMs: SHUTDOWN_GRACE_MS }, 'active jobs still running; forcing close, they will be retried')
+    await Promise.all([inbound.close(true), maintenance.close(true)])
+  }
   await maintenanceQueue.close()
   connection.disconnect()
   await closeDb()
