@@ -16,6 +16,11 @@ import { cases, type EvalCase } from './cases.js'
 
 const apiKey = process.env.ANTHROPIC_API_KEY
 if (!apiKey || apiKey === 'replace-me') {
+  // CI sets EVALS_REQUIRED when a change can affect the agent: skipping must not look like passing.
+  if (process.env.EVALS_REQUIRED === '1') {
+    process.stdout.write('evals required but ANTHROPIC_API_KEY is not available (fork PR, or secret missing)\n')
+    process.exit(1)
+  }
   process.stdout.write('evals skipped: ANTHROPIC_API_KEY not set\n')
   process.exit(0)
 }

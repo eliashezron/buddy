@@ -64,10 +64,22 @@ pnpm replay telegram-text --run    # Telegram fixtures work the same way
 pnpm telegram me                   # check the bot token (also: set-webhook <url>, info, delete-webhook)
 ```
 
-CI (`.github/workflows/ci.yml`) runs typecheck, tests and build on every PR and push
-to `main`, skipping docs-only changes. Evals call the live model, so they run in
-their own workflow (`evals.yml`), only on ready PRs that touch the agent, tools,
-policy, fixtures or dependencies, or when triggered by hand from the Actions tab.
+## CI and merging
+
+`main` is protected: every change lands through a pull request, and the single
+required check, **`gate`** (`.github/workflows/ci.yml`), must pass on a branch that is
+up to date with `main`. Nobody can bypass it, admins included, and force pushes and
+branch deletion are blocked.
+
+`gate` looks at what the PR changes and requires the matching jobs to pass:
+
+| Change | Required |
+| --- | --- |
+| Code | typecheck, migrations on an empty DB, schema-drift check, tests (incl. Postgres), build, and `pnpm smoke` (boots the compiled api + worker, sends real fixtures through both webhooks, checks the worker stored them, checks clean shutdown) |
+| Agent, tools, policy, fixtures or dependencies | the above, plus live-model evals (no regression below `evals/baseline.json`, adversarial cases must pass) |
+| Docs only | nothing |
+
+Run the evals by hand from the Actions tab: "CI" → "Run workflow" → tick *evals*.
 
 ## Connecting a real number
 
