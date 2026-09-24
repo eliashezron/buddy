@@ -54,6 +54,11 @@ pnpm replay book-meeting --run     # full pipeline in-process with the fake What
 pnpm replay book-meeting --send    # signed POST to the running API
 ```
 
+CI (`.github/workflows/ci.yml`) runs typecheck, tests and build on every PR and push
+to `main`, skipping docs-only changes. Evals call the live model, so they run in
+their own workflow (`evals.yml`), only on ready PRs that touch the agent, tools,
+policy, fixtures or dependencies, or when triggered by hand from the Actions tab.
+
 ## Connecting a real number
 
 1. Follow `docs/whatsapp-notes.md` §2 (Meta app, WABA, system-user token).

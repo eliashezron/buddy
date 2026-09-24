@@ -1,0 +1,47 @@
+name: Evals
+
+# Evals call the live model, so they only run when the agent's behaviour can
+# change: a ready (non-draft) PR touching the prompt, loop, tools, policy,
+# fixtures or dependencies. Run manually from the Actions tab otherwise.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - packages/agent/**
+      - packages/tools/**
+      - packages/core/src/tool.ts
+      - packages/core/src/policy.ts
+      - fixtures/**
+      - pnpm-lock.yaml
+      - .github/workflows/evals.yml
+  workflow_dispatch:
+
+# A new push to the same PR cancels the in-flight run: pay for the latest commit only.
+concurrency:
+  group: evals-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evals:
+    # Skip drafts, and fork PRs (they can't read the API key secret).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: corepack enable pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Fails if an adversarial case fails or accuracy drops below evals/baseline.json.
+      - run: pnpm evals
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

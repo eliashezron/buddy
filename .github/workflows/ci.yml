@@ -2,8 +2,10 @@ name: CI
 
 on:
   pull_request:
+    paths-ignore: ['**/*.md', 'docs/**']
   push:
     branches: [main]
+    paths-ignore: ['**/*.md', 'docs/**']
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -41,8 +43,3 @@ jobs:
       - run: pnpm db:migrate
       - run: pnpm test
       - run: pnpm build
-      # Tool-selection evals hit the live model. Without the secret they skip
-      # (exit 0); with it, a drop below evals/baseline.json fails the build.
-      - run: pnpm evals
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
