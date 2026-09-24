@@ -21,6 +21,13 @@ Current gaps in the v0 build (web lookup only). Each has a planned fix.
   two users, with separate history.
 - **Telegram polling mode is for one api instance.** Two pollers on one bot token
   compete for updates. Use webhook mode in production.
+- **OAuth tokens use a local AES key, not KMS** (CLAUDE.md requires KMS). This must be
+  resolved before real users connect Google accounts in production; see `docs/connectors.md`.
+- **Google app is in Testing mode:** up to 100 test users, and refresh tokens expire after
+  about a week (users are asked to reconnect).
+- **Per-user ordering across a connect/resume:** chat messages lock per `channel:id` and
+  resume events per user id, so a message sent at the exact moment of a resume can run
+  concurrently with it.
 - **Approval flow** is not built. `outbound`/`money` tool calls are recorded as
   `cancelled` and never executed (`packages/agent/src/loop.ts`).
 - **Web search goes through Anthropic's server-side tool**, via a Claude sub-call

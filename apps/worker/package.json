@@ -24,6 +24,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
     "@wa/agent": "workspace:*",
+    "@wa/connectors": "workspace:*",
     "@wa/core": "workspace:*",
     "@wa/db": "workspace:*",
     "@wa/telegram": "workspace:*",

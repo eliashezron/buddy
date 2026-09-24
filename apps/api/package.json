@@ -17,7 +17,9 @@
     "start": "node --env-file-if-exists=../../.env dist/index.js"
   },
   "dependencies": {
+    "@wa/connectors": "workspace:*",
     "@wa/core": "workspace:*",
+    "@wa/db": "workspace:*",
     "@wa/telegram": "workspace:*",
     "@wa/whatsapp": "workspace:*",
     "bullmq": "^6.3.8",

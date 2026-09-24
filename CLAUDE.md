@@ -55,6 +55,7 @@ apps/
 packages/
   whatsapp/       Cloud API client, payload parsers, signature verify, templates
   telegram/       Bot API client, update parser, secret-token verify, HTML formatting
+  connectors/     Google OAuth (just-in-time, incremental), token refresh, connect links
   agent/          loop, tool registry, prompts, evals
   tools/          one file per tool: calendar, email, notion, search, payments
   db/             drizzle schema + migrations
@@ -73,6 +74,9 @@ fixtures/         saved webhook payloads used by `pnpm replay` and tests
   `packages/agent/evals` before it is considered done.
 - Every outbound WhatsApp send goes through `packages/whatsapp` — never `fetch` the
   Graph API from a route or a tool. Likewise Telegram goes through `packages/telegram`.
+- Account access is requested just in time: a tool raises `NeedsConnectionError`, and
+  the system (never the model) sends a one-time link for exactly that permission. See
+  `docs/connectors.md`.
 - Code past the webhook is channel-agnostic: it uses the `Channel` / `ChannelEvent` types
   in `packages/core`. Telegram is official Bot API only, private chats only; see
   `docs/telegram-notes.md`.

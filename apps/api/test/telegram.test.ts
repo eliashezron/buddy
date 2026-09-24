@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createLogger, type ChannelEvent } from '@wa/core'
+import { createLogger, type ChannelEvent, type QueueEvent } from '@wa/core'
 import { buildServer } from '../src/server.js'
 import { registerTelegramWebhook, startTelegramPoller } from '../src/telegram.js'
 
@@ -15,7 +15,7 @@ function update(name: string): Record<string, unknown> {
 }
 
 function server(opts: { telegram: boolean }) {
-  const enqueued: ChannelEvent[][] = []
+  const enqueued: QueueEvent[][] = []
   const app = buildServer({
     logger,
     version: '1',

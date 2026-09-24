@@ -1,7 +1,9 @@
 # WhatsApp assistant
 
 A task assistant people reach on a WhatsApp Business number (official Cloud API only)
-or a Telegram bot (official Bot API).
+or a Telegram bot (official Bot API). It looks things up on the web, and, once the user
+allows it, works with their Google Calendar and Gmail. Access is requested only when a
+request needs it (`docs/connectors.md`).
 Right now it answers questions by searching the web and reading pages. Calendar,
 email, Notion and payments come next. Scope: `docs/PRD.md`. Rules: `CLAUDE.md`.
 Platform notes: `docs/whatsapp-notes.md`, `docs/telegram-notes.md`.
@@ -48,6 +50,11 @@ Tools (`packages/tools`, one file each):
 | --- | --- | --- |
 | `web_search` | read | Claude sub-call using Anthropic's server-side web search; returns findings + sources |
 | `fetch_page` | read | Fetches a public URL (SSRF-guarded at DNS level), returns readable text |
+| `calendar_list_events` | read | The user's Google Calendar events in a range |
+| `create_calendar_event` | low_write | A private event on the user's calendar (undo for 10 min) |
+| `gmail_search`, `gmail_read` | read | Search and read the user's Gmail |
+| `manage_connections` | low_write | List or disconnect linked accounts |
+| `undo_last_action` | low_write | Reverse the last undoable change |
 
 ## Commands
 

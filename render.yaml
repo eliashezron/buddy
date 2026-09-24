@@ -35,6 +35,18 @@ envVarGroups:
         sync: false
       - key: WHATSAPP_VERIFY_TOKEN
         sync: false
+      # Google connectors (docs/connectors.md). Leave GOOGLE_CLIENT_ID unset to keep
+      # them off. Set all four together; TOKEN_ENCRYPTION_KEY: openssl rand -base64 32.
+      # (Blueprint prompts only on first creation: add these in the dashboard.)
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: TOKEN_ENCRYPTION_KEY
+        sync: false
+      # https://<buddy-api>.onrender.com, used by the worker for connect links.
+      - key: PUBLIC_BASE_URL
+        sync: false
 
 services:
   - type: web
