@@ -91,6 +91,8 @@ The assistant is a WhatsApp Business number on the Cloud API, so it only sees me
 | [Cloud API Calling](https://developers.facebook.com/documentation/business-messaging/whatsapp/calling) | Users can call the assistant over WhatsApp, which could power live voice mode later. It gives no access to the user's other calls. |
 | WhatsApp Pay | Not available in Uganda or Kenya. Payments go through mobile money and card PSPs. |
 
+**Implementation notes.** Cloud API mechanics (account setup, webhook verification and payload shapes, sending, media, the 24-hour window and templates, Coexistence, error codes, local testing) live in [`docs/whatsapp-notes.md`](whatsapp-notes.md).
+
 **Competitors that take the unofficial route.** Perisclaw offers full WhatsApp inbox summaries by linking to the user's account as a device, [built on OpenClaw's Baileys client](https://openclaw-openclaw.mintlify.app/channels/whatsapp). Its [own blog](https://www.perisclaw.com/blog/openclaw-for-whatsapp-how-to-set-it-up-and-why-most-setups-break) warns that accounts can be flagged or restricted, and advises using a spare number. That is our differentiation: the same convenience for email, calendar, payments and business chats, with no ban risk to the user's real number.
 
 ## Recommended architecture

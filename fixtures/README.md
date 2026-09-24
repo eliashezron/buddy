@@ -18,11 +18,13 @@ integration tests. They let the whole inbound pipeline be exercised without a ph
   real webhook.
 - IDs are placeholders. `pnpm replay` should substitute `PHONE_NUMBER_ID_PLACEHOLDER`,
   `WABA_ID_PLACEHOLDER` and `MEDIA_ID_PLACEHOLDER` from the local env, and compute a
-  valid `X-Hub-Signature-256` over the raw body using `APP_SECRET` so the signature
-  path is tested too.
+  valid `X-Hub-Signature-256` over the raw body using `WHATSAPP_APP_SECRET` so the
+  signature path is tested too.
 - Field names came from implementation guides, not Meta's primary reference, which
   requires a login. **Verify them against Meta's own webhook reference while building
   T2 and T3**, then capture two or three real payloads from the test number and commit
   them here, replacing these by-hand fixtures.
+- Sanitise captured payloads before committing: replace real phone numbers, names
+  and message text. Fixtures live in git forever; real user data must not.
 - Add a fixture whenever a new inbound type is handled (image, document, location,
   order, `smb_message_echoes` for business mode).
