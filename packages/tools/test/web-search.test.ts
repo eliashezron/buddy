@@ -51,6 +51,6 @@ describe('web_search tool', () => {
     )
     expect(out).toMatchObject({ ok: true, summary: '1 USD ≈ 3,700 UGX.' })
     expect(requests).toHaveLength(2)
-    expect(requests[0]).toMatchObject({ model: 'claude-sonnet-5', tools: [{ type: 'web_search_20260209', name: 'web_search' }] })
+    expect(requests[0]).toMatchObject({ model: 'claude-sonnet-5', tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }] })
   })
 })
