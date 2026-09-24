@@ -1,0 +1,106 @@
+# Render Blueprint: api (web), worker, Postgres and Key Value in Frankfurt, the closest
+# Render region to East Africa. Setup and operations: docs/deploy-render.md.
+#
+# Deploys happen only after GitHub checks pass on main (autoDeployTrigger: checksPass),
+# so the same `gate` that protects merges protects production.
+
+envVarGroups:
+  - name: buddy-shared
+    envVars:
+      - key: LOG_LEVEL
+        value: info
+      - key: GRAPH_API_VERSION
+        value: v23.0
+      - key: DEFAULT_TIMEZONE
+        value: Africa/Kampala
+      - key: MESSAGE_RETENTION_DAYS
+        value: "30"
+      - key: TELEGRAM_MODE
+        value: webhook
+      # Secrets: Render asks for these when the Blueprint is created. Never commit them.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      # 32–256 chars of [A-Za-z0-9_-]. Generate with: openssl rand -hex 32
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+      # Required at boot. Until the Meta app exists, any placeholder works: the
+      # WhatsApp webhook then rejects everything (signatures can't match).
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_APP_SECRET
+        sync: false
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false
+
+services:
+  - type: web
+    name: buddy-api
+    runtime: node
+    region: frankfurt
+    plan: starter # not free: free web services sleep after 15 min and webhooks would wait ~1 min
+    buildCommand: bash scripts/render/build.sh @wa/api @wa/db
+    # Advisory-locked, so running it from both services is safe.
+    preDeployCommand: node packages/db/dist/migrate.js
+    startCommand: NODE_ENV=production node apps/api/dist/index.js
+    healthCheckPath: /health
+    autoDeployTrigger: checksPass
+    buildFilter:
+      ignoredPaths: ["**/*.md", "docs/**", "apps/web/**"]
+    envVars:
+      - fromGroup: buddy-shared
+      - key: DATABASE_URL
+        fromDatabase:
+          name: buddy-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: buddy-redis
+          property: connectionString
+      # RENDER_EXTERNAL_URL is set by Render; the api registers the Telegram webhook from it.
+
+  - type: worker
+    name: buddy-worker
+    runtime: node
+    region: frankfurt
+    plan: starter # background workers have no free tier
+    buildCommand: bash scripts/render/build.sh @wa/worker
+    preDeployCommand: node packages/db/dist/migrate.js
+    startCommand: NODE_ENV=production node apps/worker/dist/index.js
+    # The worker force-closes after 15 s; this leaves margin before SIGKILL.
+    maxShutdownDelaySeconds: 30
+    autoDeployTrigger: checksPass
+    buildFilter:
+      ignoredPaths: ["**/*.md", "docs/**", "apps/web/**", "apps/api/**"]
+    envVars:
+      - fromGroup: buddy-shared
+      - key: DATABASE_URL
+        fromDatabase:
+          name: buddy-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: buddy-redis
+          property: connectionString
+
+  - type: keyvalue
+    name: buddy-redis
+    region: frankfurt
+    plan: starter # free Key Value loses data on restart, i.e. queued messages
+    maxmemoryPolicy: noeviction # BullMQ requirement: never evict queue keys
+    persistenceMode: journal-snapshot
+    ipAllowList: [] # internal network only
+
+databases:
+  - name: buddy-db
+    region: frankfurt
+    plan: basic-256mb # free Postgres expires after 30 days
+    postgresMajorVersion: "16"
+    databaseName: buddy
+    user: buddy
+    ipAllowList: [] # internal network only

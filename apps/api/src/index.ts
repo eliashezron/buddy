@@ -3,7 +3,7 @@ import { createLogger, envSchema, loadConfigOrExit } from '@wa/core'
 import { BotApiClient } from '@wa/telegram'
 import { createInboundQueue } from './queue.js'
 import { buildServer } from './server.js'
-import { startTelegramPoller } from './telegram.js'
+import { registerTelegramWebhook, startTelegramPoller } from './telegram.js'
 
 const config = loadConfigOrExit(envSchema)
 const logger = createLogger({ name: 'api', level: config.LOG_LEVEL })
@@ -21,12 +21,17 @@ const app = buildServer({
     : {}),
 })
 
+const telegram = config.TELEGRAM_BOT_TOKEN
+  ? new BotApiClient({ token: config.TELEGRAM_BOT_TOKEN, logger: logger.child({ component: 'telegram' }) })
+  : null
+
 const poller =
-  config.TELEGRAM_BOT_TOKEN && config.TELEGRAM_MODE === 'polling'
+  telegram && config.TELEGRAM_MODE === 'polling'
     ? startTelegramPoller({
-        client: new BotApiClient({ token: config.TELEGRAM_BOT_TOKEN, logger: logger.child({ component: 'telegram' }) }),
+        client: telegram,
         enqueue: queue.enqueue,
         logger: logger.child({ component: 'telegram-poller' }),
+        takeover: config.TELEGRAM_POLLING_TAKEOVER,
       })
     : null
 
@@ -48,4 +53,20 @@ try {
 } catch (err) {
   logger.fatal({ err }, 'failed to start')
   process.exit(1)
+}
+
+// Webhook mode with a known public URL (Render sets RENDER_EXTERNAL_URL): register
+// ourselves with Telegram, only after we're listening so the first update lands.
+const publicUrl = config.PUBLIC_BASE_URL ?? config.RENDER_EXTERNAL_URL
+if (telegram && config.TELEGRAM_MODE === 'webhook' && config.TELEGRAM_WEBHOOK_SECRET) {
+  if (publicUrl) {
+    await registerTelegramWebhook({
+      client: telegram,
+      baseUrl: publicUrl,
+      secretToken: config.TELEGRAM_WEBHOOK_SECRET,
+      logger: logger.child({ component: 'telegram' }),
+    })
+  } else {
+    logger.warn('telegram webhook mode without PUBLIC_BASE_URL: register it with `pnpm telegram set-webhook <url>`')
+  }
 }
