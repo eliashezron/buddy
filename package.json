@@ -15,7 +15,8 @@
     "db:generate": "pnpm --filter @wa/db generate",
     "db:migrate": "pnpm --filter @wa/db migrate",
     "replay": "tsx --conditions=development --env-file-if-exists=.env scripts/replay.ts",
-    "telegram": "tsx --conditions=development --env-file-if-exists=.env scripts/telegram.ts"
+    "telegram": "tsx --conditions=development --env-file-if-exists=.env scripts/telegram.ts",
+    "smoke": "bash scripts/ci/smoke.sh"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.128.0",

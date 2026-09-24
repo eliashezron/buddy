@@ -1,20 +1,57 @@
 name: CI
 
+# One workflow, one required check: `gate`.
+#
+# `main` is protected by a ruleset that requires `gate` (from GitHub Actions) to pass
+# on an up-to-date branch before anything merges. `gate` always runs and always
+# reports, so path-based skipping can never leave a PR stuck on a check that never
+# ran. It fails unless every job the change needs has passed:
+#
+#   code change   → check: typecheck, migrations, schema drift, tests, build, smoke test
+#   agent change  → evals: live-model tool-selection + adversarial evals
+#   docs only     → nothing to run, gate passes
 on:
   pull_request:
-    paths-ignore: ['**/*.md', 'docs/**']
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
-    paths-ignore: ['**/*.md', 'docs/**']
+  workflow_dispatch:
+    inputs:
+      evals:
+        description: Also run the live-model evals
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  check:
+  changes:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+      agent: ${{ steps.diff.outputs.agent }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # PRs check out the merge commit; its first parent is the current base.
+          fetch-depth: 2
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          FORCE_EVALS: ${{ inputs.evals || false }}
+        run: bash scripts/ci/changes.sh
+
+  check:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -25,9 +62,15 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U wa -d wa" --health-interval 2s --health-timeout 3s --health-retries 30
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 3s --health-retries 30
     env:
       DATABASE_URL: postgres://wa:wa@localhost:5432/wa
       TEST_DATABASE_URL: postgres://wa:wa@localhost:5432/wa
+      REDIS_URL: redis://localhost:6379
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -40,6 +83,67 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
-      - run: pnpm db:migrate
+      - name: Apply migrations to an empty database
+        run: pnpm db:migrate
+      - name: Schema matches committed migrations
+        run: |
+          pnpm --filter @wa/db exec drizzle-kit generate --name ci_drift_check
+          if [ -n "$(git status --porcelain packages/db/migrations)" ]; then
+            echo "::error::packages/db/src/schema.ts has changes with no migration. Run 'pnpm db:generate' and commit the result."
+            git status --porcelain packages/db/migrations
+            exit 1
+          fi
       - run: pnpm test
       - run: pnpm build
+      - name: Smoke test the compiled app
+        run: pnpm smoke
+
+  evals:
+    needs: changes
+    # Drafts can't merge; evals run when the PR is marked ready for review.
+    if: needs.changes.outputs.agent == 'true' && github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: corepack enable pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Fails on any adversarial failure or accuracy below evals/baseline.json.
+      # EVALS_REQUIRED: a missing key (e.g. fork PR) fails instead of skipping.
+      - run: pnpm evals
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVALS_REQUIRED: "1"
+
+  gate:
+    # The only required check. Must always run, so it can never be "expected" forever.
+    if: always()
+    needs: [changes, check, evals]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          CHANGES: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          AGENT: ${{ needs.changes.outputs.agent }}
+          CHECK: ${{ needs.check.result }}
+          EVALS: ${{ needs.evals.result }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$CHANGES" = success ] || fail "change detection: $CHANGES"
+          if [ "$CODE" = true ]; then
+            [ "$CHECK" = success ] || fail "check (typecheck/tests/build/smoke): $CHECK"
+          fi
+          if [ "$AGENT" = true ]; then
+            [ "$DRAFT" = true ] && fail "draft PR: evals run once it is marked ready for review"
+            [ "$EVALS" = success ] || fail "evals: $EVALS"
+          fi
+          echo "gate passed (code=$CODE, agent=$AGENT, check=$CHECK, evals=$EVALS)"
