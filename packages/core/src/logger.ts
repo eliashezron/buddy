@@ -8,6 +8,8 @@ export type { Logger }
  * rule is: log ids and metadata as fields, never `log.info(`got ${body}`)`.
  */
 
+export const REDACTED = '[REDACTED]'
+
 // Message content: bodies, captions, transcripts, prompts, search queries.
 const CONTENT_KEYS = new Set([
   'body',
@@ -39,15 +41,17 @@ const PHONE_KEYS = new Set([
 // Shorter runs (10-digit unix timestamps, ids) are left alone.
 const PHONE_IN_TEXT = /\+?\b\d{11,15}\b/g
 
-export const REDACTED = '[REDACTED]'
-
 export function maskPhone(value: unknown): string {
   const digits = String(value).replace(/\D/g, '')
   return digits.length <= 4 ? '***' : `***${digits.slice(-4)}`
 }
 
+// Telegram bot tokens travel in API URLs (api.telegram.org/bot<token>/…), so they
+// can surface inside error messages. Checked before the phone scan.
+const BOT_TOKEN_IN_TEXT = /\d{5,}:[A-Za-z0-9_-]{30,}/g
+
 export function maskPhonesInText(text: string): string {
-  return text.replace(PHONE_IN_TEXT, (m) => maskPhone(m))
+  return text.replace(BOT_TOKEN_IN_TEXT, REDACTED).replace(PHONE_IN_TEXT, (m) => maskPhone(m))
 }
 
 export function sanitize(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
@@ -102,6 +106,10 @@ export function createLogger({ name, level, destination }: CreateLoggerOptions):
     level: level ?? process.env.LOG_LEVEL ?? 'info',
     base: { service: name },
     timestamp: pino.stdTimeFunctions.isoTime,
+    // formatters.log runs before serializers, and sanitize() already turns errors into
+    // plain objects. pino's default err serializer would re-wrap that object and report
+    // its type as "Object", so it is replaced with a pass-through.
+    serializers: { err: (value: unknown) => value },
     formatters: {
       level: (label) => ({ level: label }),
       log: (obj) => sanitize(obj) as Record<string, unknown>,
