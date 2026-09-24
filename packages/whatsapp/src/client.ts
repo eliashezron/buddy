@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { Logger } from '@wa/core'
+import { ChannelSendError, type Logger } from '@wa/core'
 
 /**
  * The only code allowed to talk to the Graph API. Routes, tools and workers get a
@@ -11,18 +11,18 @@ export interface WhatsAppClient {
   markRead(messageId: string, opts?: { typing?: boolean }): Promise<void>
 }
 
-export class GraphApiError extends Error {
+export class GraphApiError extends ChannelSendError {
   override name = 'GraphApiError'
   constructor(
     readonly status: number,
     readonly code: number | undefined,
     message: string,
   ) {
-    super(message)
+    // 5xx and 429 are retryable; every other 4xx is permanent (whatsapp-notes.md §5).
+    super(message, !(status >= 500 || status === 429 || code === 130429))
   }
-  /** 5xx and 429 are retryable; every other 4xx is permanent (whatsapp-notes.md §5). */
   get retryable(): boolean {
-    return this.status >= 500 || this.status === 429 || this.code === 130429
+    return !this.permanent
   }
 }
 

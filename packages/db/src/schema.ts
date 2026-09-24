@@ -14,16 +14,20 @@ import {
 // All timestamps are timestamptz and stored in UTC.
 const createdAt = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 
+// Must match CHANNELS in @wa/core (checked by test). drizzle-kit loads this file on its own, so no imports.
+export const channel = pgEnum('channel', ['whatsapp', 'telegram'])
+
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
-  /** WhatsApp id (phone number in international format). Never log in full. */
-  waId: text('wa_id').notNull().unique(),
+  channel: channel('channel').notNull(),
+  /** The user's id on the channel: wa_id (a phone number: never log in full) or Telegram chat id. */
+  externalId: text('external_id').notNull(),
   displayName: text('display_name'),
   timezone: text('timezone').notNull(),
   /** Drives the 24 h customer service window check before every send. */
   lastInboundAt: timestamp('last_inbound_at', { withTimezone: true }),
   createdAt: createdAt(),
-})
+}, (t) => [uniqueIndex('users_channel_external_id_key').on(t.channel, t.externalId)])
 
 export const messageDirection = pgEnum('message_direction', ['inbound', 'outbound'])
 
@@ -35,8 +39,9 @@ export const messages = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     direction: messageDirection('direction').notNull(),
-    /** Meta's `messages[].id`. Unique: this is the idempotency key for at-least-once delivery. */
-    waMessageId: text('wa_message_id').notNull(),
+    channel: channel('channel').notNull(),
+    /** Channel message id (wamid, or `<chatId>:<message_id>`). With `channel`, the idempotency key for at-least-once delivery. */
+    externalMessageId: text('external_message_id').notNull(),
     type: text('type').notNull(),
     /** Nulled by the retention job after MESSAGE_RETENTION_DAYS. */
     body: text('body'),
@@ -48,7 +53,7 @@ export const messages = pgTable(
     createdAt: createdAt(),
   },
   (t) => [
-    uniqueIndex('messages_wa_message_id_key').on(t.waMessageId),
+    uniqueIndex('messages_channel_external_id_key').on(t.channel, t.externalMessageId),
     index('messages_user_sent_at_idx').on(t.userId, t.sentAt),
   ],
 )
@@ -111,6 +116,7 @@ export const actions = pgTable(
   (t) => [index('actions_user_idx').on(t.userId, t.createdAt), index('actions_run_idx').on(t.runId)],
 )
 
+export type Channel = (typeof channel.enumValues)[number]
 export type User = typeof users.$inferSelect
 export type Message = typeof messages.$inferSelect
 export type Action = typeof actions.$inferSelect

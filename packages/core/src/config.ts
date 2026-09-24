@@ -4,7 +4,7 @@ import { z } from 'zod'
 // empty secret must fail boot rather than pass as a valid value.
 const required = () => z.string().trim().min(1)
 
-export const envSchema = z.object({
+const baseEnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
   HOST: z.string().default('0.0.0.0'),
@@ -25,14 +25,31 @@ export const envSchema = z.object({
   AGENT_MODEL: z.string().default('claude-opus-5'),
   SEARCH_MODEL: z.string().default('claude-sonnet-5'),
 
+  // Telegram is optional: setting the bot token turns the channel on.
+  TELEGRAM_BOT_TOKEN: z.string().regex(/^\d+:[\w-]{30,}$/, 'expected a BotFather token like 123456:ABC…').optional(),
+  // Sent back by Telegram in X-Telegram-Bot-Api-Secret-Token on every webhook call.
+  TELEGRAM_WEBHOOK_SECRET: z.string().regex(/^[\w-]{32,256}$/, 'use 32–256 chars of A-Z, a-z, 0-9, _ or -').optional(),
+  // webhook: Telegram POSTs to /telegram/webhook. polling: the api long-polls (local dev, no tunnel).
+  TELEGRAM_MODE: z.enum(['webhook', 'polling']).default('webhook'),
+
   DEFAULT_TIMEZONE: z.string().default('Africa/Kampala'),
   MESSAGE_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
+})
+
+export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
+  if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_MODE === 'webhook' && !env.TELEGRAM_WEBHOOK_SECRET) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['TELEGRAM_WEBHOOK_SECRET'],
+      message: 'required when TELEGRAM_BOT_TOKEN is set in webhook mode',
+    })
+  }
 })
 
 export type Config = z.infer<typeof envSchema>
 
 /** The subset `pnpm db:migrate` needs, so migrations don't require WhatsApp secrets. */
-export const dbEnvSchema = envSchema.pick({ NODE_ENV: true, LOG_LEVEL: true, DATABASE_URL: true })
+export const dbEnvSchema = baseEnvSchema.pick({ NODE_ENV: true, LOG_LEVEL: true, DATABASE_URL: true })
 
 export class ConfigError extends Error {
   constructor(

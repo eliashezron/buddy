@@ -16,6 +16,13 @@
     "dev": "tsx watch --conditions=development --env-file-if-exists=../../.env src/index.ts",
     "start": "node --env-file-if-exists=../../.env dist/index.js"
   },
-  "dependencies": { "@wa/core": "workspace:*", "@wa/whatsapp": "workspace:*", "bullmq": "^6.3.8", "fastify": "^5.12.5", "ioredis": "^6.0.0" },
+  "dependencies": {
+    "@wa/core": "workspace:*",
+    "@wa/telegram": "workspace:*",
+    "@wa/whatsapp": "workspace:*",
+    "bullmq": "^6.3.8",
+    "fastify": "^5.12.5",
+    "ioredis": "^6.0.0"
+  },
   "devDependencies": {}
 }

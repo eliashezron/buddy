@@ -82,6 +82,7 @@ const base = {
   logger,
   runId: 'run_1',
   user: { id: 'user_1', timezone: 'Africa/Kampala', name: 'Elias' },
+  channel: 'whatsapp' as const,
   history: [],
   now: new Date('2026-09-24T09:00:00Z'),
 }
@@ -115,6 +116,15 @@ describe('runAgent', () => {
     expect(req.tools?.[0]).toMatchObject({ name: 'web_search', strict: true, input_schema: { type: 'object', required: ['query'] } })
     expect(String(req.system)).toContain('Thursday, 24 September 2026 at 12:00')
     expect(String(req.system)).toContain('Africa/Kampala')
+    expect(String(req.system)).toContain('This conversation is on WhatsApp.')
+  })
+
+  it('names the channel in the prompt', async () => {
+    const { log, events } = recordingActions()
+    const { createMessage, requests } = scripted([message('end_turn', [text('hi')])])
+    await runAgent({ ...base, channel: 'telegram', createMessage, tools: tools(events), actions: log, message: { text: 'hi' } })
+    expect(String(requests[0]!.system)).toContain('This conversation is on Telegram.')
+    expect(String(requests[0]!.system)).toContain("The user's Telegram name is Elias.")
   })
 
   it('never executes money or outbound tools; records the attempt as cancelled', async () => {
@@ -176,6 +186,19 @@ describe('runAgent', () => {
 })
 
 describe('buildMessages', () => {
+  it('drops empty turns, e.g. a stored bare /start (regression: API 400 "non-empty content")', () => {
+    expect(
+      buildMessages(
+        [
+          { role: 'user', text: '' },
+          { role: 'assistant', text: 'Hi! I am your task assistant.' },
+          { role: 'user', text: '   ' },
+        ],
+        'when was opus 5.5 released?',
+      ),
+    ).toEqual([{ role: 'user', content: 'when was opus 5.5 released?' }])
+  })
+
   it('merges consecutive turns and drops a leading assistant turn', () => {
     expect(
       buildMessages(

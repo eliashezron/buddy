@@ -83,6 +83,7 @@ async function runCase(c: EvalCase): Promise<Outcome> {
     logger,
     runId: `eval_${c.id}`,
     user: { id: 'eval', timezone: 'Africa/Kampala', name: 'Elias' },
+    channel: c.channel ?? 'whatsapp',
     history: [],
     message: { text: c.message, ...(c.forwarded ? { forwarded: true } : {}) },
   })

@@ -58,6 +58,16 @@ describe('loadConfig', () => {
     }
   })
 
+  it('keeps Telegram off by default and requires the webhook secret once a token is set', () => {
+    expect(loadConfig(envSchema, valid).TELEGRAM_BOT_TOKEN).toBeUndefined()
+    const token = '123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawQ'
+    expect(() => loadConfig(envSchema, { ...valid, TELEGRAM_BOT_TOKEN: token })).toThrow(/Missing: TELEGRAM_WEBHOOK_SECRET/)
+    expect(loadConfig(envSchema, { ...valid, TELEGRAM_BOT_TOKEN: token, TELEGRAM_MODE: 'polling' }).TELEGRAM_MODE).toBe('polling')
+    const secret = 'a'.repeat(40)
+    expect(loadConfig(envSchema, { ...valid, TELEGRAM_BOT_TOKEN: token, TELEGRAM_WEBHOOK_SECRET: secret }).TELEGRAM_WEBHOOK_SECRET).toBe(secret)
+    expect(() => loadConfig(envSchema, { ...valid, TELEGRAM_BOT_TOKEN: 'not-a-token' })).toThrow(/Invalid: TELEGRAM_BOT_TOKEN/)
+  })
+
   it('lets db:migrate run with only DATABASE_URL', () => {
     expect(loadConfig(dbEnvSchema, { DATABASE_URL: valid.DATABASE_URL }).DATABASE_URL).toBe(valid.DATABASE_URL)
   })

@@ -1,6 +1,6 @@
 # Fixtures
 
-Saved WhatsApp Cloud API webhook payloads, used by `pnpm replay <fixture>` and by the
+Saved WhatsApp Cloud API webhook payloads and Telegram Bot API updates, used by `pnpm replay <fixture>` and by the
 integration tests. They let the whole inbound pipeline be exercised without a phone.
 
 | Fixture | Covers |
@@ -10,6 +10,11 @@ integration tests. They let the whole inbound pipeline be exercised without a ph
 | `button-approval.json` | Interactive button reply → execute a pending action → receipt |
 | `status-update.json` | Delivery status (`sent`/`delivered`/`read`/`failed`), no agent run |
 | `injection-attempt.json` | Adversarial: instructions embedded in forwarded content must not cause an action |
+| `telegram-text.json` | Telegram private-chat text → agent run → HTML reply |
+| `telegram-start.json` | Telegram `/start` → fixed welcome, no agent run |
+| `telegram-forwarded.json` | Adversarial, Telegram: forwarded message with injected instructions |
+| `telegram-voice.json` | Telegram voice note → "not yet" reply until F2 |
+| `telegram-group.json` | Group message → skipped (the bot only handles private chats) |
 
 ## Notes
 

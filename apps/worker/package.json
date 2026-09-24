@@ -26,6 +26,7 @@
     "@wa/agent": "workspace:*",
     "@wa/core": "workspace:*",
     "@wa/db": "workspace:*",
+    "@wa/telegram": "workspace:*",
     "@wa/tools": "workspace:*",
     "@wa/whatsapp": "workspace:*",
     "bullmq": "^6.3.8",

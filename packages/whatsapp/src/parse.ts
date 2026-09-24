@@ -1,3 +1,4 @@
+import type { ChannelEvent, InboundMessage, StatusUpdate } from '@wa/core'
 import {
   changeValueSchema,
   webhookPayloadSchema,
@@ -5,39 +6,8 @@ import {
   type RawStatus,
 } from './schemas.js'
 
-/** Normalised, channel-level view of one inbound message. JSON-serialisable (it goes on a queue). */
-export interface InboundMessage {
-  id: string
-  from: string
-  /** Unix seconds, as sent by Meta. */
-  timestamp: number
-  type: string
-  phoneNumberId: string
-  contactName?: string
-  replyToId?: string
-  /** WhatsApp marks forwarded messages; their content is untrusted. */
-  forwarded?: boolean
-  text?: string
-  media?: { kind: string; id: string; mimeType?: string; caption?: string; voice?: boolean }
-  /** Interactive button/list reply, or template quick-reply button. */
-  reply?: { id: string; title: string }
-}
-
-export interface StatusUpdate {
-  id: string
-  status: string
-  timestamp: number
-  recipientId: string
-  phoneNumberId: string
-  errorCodes: number[]
-}
-
-export type WebhookEvent =
-  | { kind: 'message'; message: InboundMessage }
-  | { kind: 'status'; status: StatusUpdate }
-
 export interface ParseResult {
-  events: WebhookEvent[]
+  events: ChannelEvent[]
   /** Changes we saw but don't handle (other fields, malformed values). Counted, never dropped silently. */
   skipped: { field: string; reason: string }[]
 }
@@ -48,13 +18,14 @@ export class InvalidPayloadError extends Error {
 
 const MEDIA_TYPES = ['audio', 'image', 'document', 'video', 'sticker'] as const
 
-function toInbound(m: RawInboundMessage, phoneNumberId: string, contactName?: string): InboundMessage {
+function toInbound(m: RawInboundMessage, contactName?: string): InboundMessage {
   const out: InboundMessage = {
+    channel: 'whatsapp',
     id: m.id,
     from: m.from,
     timestamp: Number(m.timestamp),
     type: m.type,
-    phoneNumberId,
+    platformMessageId: m.id,
   }
   if (contactName) out.contactName = contactName
   if (m.context?.id) out.replyToId = m.context.id
@@ -78,13 +49,13 @@ function toInbound(m: RawInboundMessage, phoneNumberId: string, contactName?: st
   return out
 }
 
-function toStatus(s: RawStatus, phoneNumberId: string): StatusUpdate {
+function toStatus(s: RawStatus): StatusUpdate {
   return {
+    channel: 'whatsapp',
     id: s.id,
     status: s.status,
     timestamp: Number(s.timestamp),
     recipientId: s.recipient_id,
-    phoneNumberId,
     errorCodes: (s.errors ?? []).map((e) => e.code),
   }
 }
@@ -97,7 +68,7 @@ export function parseWebhook(json: unknown): ParseResult {
   const envelope = webhookPayloadSchema.safeParse(json)
   if (!envelope.success) throw new InvalidPayloadError('not a whatsapp_business_account webhook')
 
-  const events: WebhookEvent[] = []
+  const events: ChannelEvent[] = []
   const skipped: ParseResult['skipped'] = []
 
   for (const entry of envelope.data.entry) {
@@ -111,14 +82,14 @@ export function parseWebhook(json: unknown): ParseResult {
         skipped.push({ field: change.field, reason: 'malformed value' })
         continue
       }
-      const { metadata, contacts = [], messages = [], statuses = [] } = value.data
+      const { contacts = [], messages = [], statuses = [] } = value.data
       const names = new Map(contacts.map((c) => [c.wa_id, c.profile?.name]))
 
       for (const m of messages) {
-        events.push({ kind: 'message', message: toInbound(m, metadata.phone_number_id, names.get(m.from)) })
+        events.push({ kind: 'message', message: toInbound(m, names.get(m.from)) })
       }
       for (const s of statuses) {
-        events.push({ kind: 'status', status: toStatus(s, metadata.phone_number_id) })
+        events.push({ kind: 'status', status: toStatus(s) })
       }
     }
   }

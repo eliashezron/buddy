@@ -14,13 +14,15 @@
     "evals": "pnpm --filter @wa/agent evals",
     "db:generate": "pnpm --filter @wa/db generate",
     "db:migrate": "pnpm --filter @wa/db migrate",
-    "replay": "tsx --conditions=development --env-file-if-exists=.env scripts/replay.ts"
+    "replay": "tsx --conditions=development --env-file-if-exists=.env scripts/replay.ts",
+    "telegram": "tsx --conditions=development --env-file-if-exists=.env scripts/telegram.ts"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
     "@types/node": "^24.0.0",
     "@wa/core": "workspace:*",
     "@wa/db": "workspace:*",
+    "@wa/telegram": "workspace:*",
     "@wa/tools": "workspace:*",
     "@wa/whatsapp": "workspace:*",
     "@wa/worker": "workspace:*",

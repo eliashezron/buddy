@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, inArray, isNotNull, lt, ne } from 'drizzle-orm'
 import type { Db } from './client.js'
-import { actions, agentRuns, messages, users, type ActionStatus, type User } from './schema.js'
+import { actions, agentRuns, messages, users, type ActionStatus, type Channel, type User } from './schema.js'
 
 export type Risk = (typeof actions.$inferInsert)['risk']
 
@@ -9,20 +9,29 @@ const STATUS_RANK: Record<string, number> = { sent: 1, delivered: 2, read: 3, fa
 export function createRepo(db: Db) {
   return {
     /** Creates the user on first contact and advances `last_inbound_at` (never backwards: webhooks are unordered). */
-    async upsertUserOnInbound(input: { waId: string; displayName?: string; at: Date; timezone: string }): Promise<User> {
+    async upsertUserOnInbound(input: {
+      channel: Channel
+      externalId: string
+      displayName?: string
+      at: Date
+      timezone: string
+    }): Promise<User> {
       const [row] = await db
         .insert(users)
         .values({
-          waId: input.waId,
+          channel: input.channel,
+          externalId: input.externalId,
           displayName: input.displayName ?? null,
           timezone: input.timezone,
           lastInboundAt: input.at,
         })
-        .onConflictDoNothing({ target: users.waId })
+        .onConflictDoNothing({ target: [users.channel, users.externalId] })
         .returning()
       if (row) return row
 
-      const existing = await db.query.users.findFirst({ where: eq(users.waId, input.waId) })
+      const existing = await db.query.users.findFirst({
+        where: and(eq(users.channel, input.channel), eq(users.externalId, input.externalId)),
+      })
       if (!existing) throw new Error('user vanished during upsert')
       const patch: Partial<typeof users.$inferInsert> = {}
       if (!existing.lastInboundAt || existing.lastInboundAt < input.at) patch.lastInboundAt = input.at
@@ -32,8 +41,11 @@ export function createRepo(db: Db) {
       return updated ?? existing
     },
 
-    async getLastInboundAt(waId: string): Promise<Date | null> {
-      const row = await db.query.users.findFirst({ where: eq(users.waId, waId), columns: { lastInboundAt: true } })
+    async getLastInboundAt(channel: Channel, externalId: string): Promise<Date | null> {
+      const row = await db.query.users.findFirst({
+        where: and(eq(users.channel, channel), eq(users.externalId, externalId)),
+        columns: { lastInboundAt: true },
+      })
       return row?.lastInboundAt ?? null
     },
 
@@ -44,7 +56,8 @@ export function createRepo(db: Db) {
      */
     async insertInboundMessage(input: {
       userId: string
-      waMessageId: string
+      channel: Channel
+      externalMessageId: string
       type: string
       body: string | null
       sentAt: Date
@@ -52,11 +65,11 @@ export function createRepo(db: Db) {
       const [row] = await db
         .insert(messages)
         .values({ ...input, direction: 'inbound' })
-        .onConflictDoNothing({ target: messages.waMessageId })
+        .onConflictDoNothing({ target: [messages.channel, messages.externalMessageId] })
         .returning({ id: messages.id })
       if (row) return { id: row.id, isNew: true }
       const existing = await db.query.messages.findFirst({
-        where: eq(messages.waMessageId, input.waMessageId),
+        where: and(eq(messages.channel, input.channel), eq(messages.externalMessageId, input.externalMessageId)),
         columns: { id: true },
       })
       if (!existing) throw new Error('message vanished during insert')
@@ -71,17 +84,28 @@ export function createRepo(db: Db) {
       return Boolean(row)
     },
 
-    async insertOutboundMessage(input: { userId: string; waMessageId: string; body: string; sentAt: Date }) {
+    async insertOutboundMessage(input: {
+      userId: string
+      channel: Channel
+      externalMessageId: string
+      body: string
+      sentAt: Date
+    }) {
       await db
         .insert(messages)
         .values({ ...input, direction: 'outbound', type: 'text', status: 'sent' })
-        .onConflictDoNothing({ target: messages.waMessageId })
+        .onConflictDoNothing({ target: [messages.channel, messages.externalMessageId] })
     },
 
     /** Applies a delivery status, ignoring out-of-order regressions (e.g. `delivered` arriving after `read`). */
-    async applyStatus(input: { waMessageId: string; status: string; errorCodes: number[] }): Promise<boolean> {
+    async applyStatus(input: {
+      channel: Channel
+      externalMessageId: string
+      status: string
+      errorCodes: number[]
+    }): Promise<boolean> {
       const row = await db.query.messages.findFirst({
-        where: eq(messages.waMessageId, input.waMessageId),
+        where: and(eq(messages.channel, input.channel), eq(messages.externalMessageId, input.externalMessageId)),
         columns: { id: true, status: true },
       })
       if (!row) return false

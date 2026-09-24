@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { decide, type AnyTool, type Logger, type Risk } from '@wa/core'
+import { decide, type AnyTool, type ChannelName, type Logger, type Risk } from '@wa/core'
 import { z } from 'zod'
 import { buildSystemPrompt, wrapForwarded } from './prompt.js'
 
@@ -33,6 +33,8 @@ export interface RunAgentInput {
   logger: Logger
   runId: string
   user: { id: string; name?: string; timezone: string }
+  /** Which chat app this conversation is on; shapes the prompt. */
+  channel: ChannelName
   history: HistoryTurn[]
   message: { text: string; forwarded?: boolean }
   now?: Date
@@ -80,10 +82,11 @@ function toolParam(tool: AnyTool): Anthropic.Beta.Messages.BetaTool {
   }
 }
 
-/** Collapses stored history into alternating turns, starting with the user. */
+/** Collapses stored history into alternating, non-empty turns, starting with the user. */
 export function buildMessages(history: HistoryTurn[], current: string): BetaMessageParam[] {
   const turns: HistoryTurn[] = []
-  for (const t of [...history, { role: 'user' as const, text: current }]) {
+  // The API rejects empty turns, so blank history entries are dropped here.
+  for (const t of [...history, { role: 'user' as const, text: current }].filter((t) => t.text.trim())) {
     const last = turns.at(-1)
     if (last && last.role === t.role) last.text = `${last.text}\n\n${t.text}`
     else turns.push({ ...t })
@@ -111,7 +114,7 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
 
   const current = input.message.forwarded ? wrapForwarded(input.message.text) : input.message.text
   const messages = buildMessages(input.history, current)
-  const promptCtx = { timezone: user.timezone, now, ...(user.name ? { userName: user.name } : {}) }
+  const promptCtx = { channel: input.channel, timezone: user.timezone, now, ...(user.name ? { userName: user.name } : {}) }
   const system = buildSystemPrompt(promptCtx)
 
   async function runTool(block: BetaToolUseBlock): Promise<BetaToolResultBlockParam> {

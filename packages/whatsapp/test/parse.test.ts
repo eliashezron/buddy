@@ -14,11 +14,12 @@ describe('parseWebhook', () => {
     expect(event).toEqual({
       kind: 'message',
       message: {
+        channel: 'whatsapp',
         id: 'wamid.TEST_BOOK_MEETING_0001',
         from: '256770000001',
         timestamp: 1790000000,
         type: 'text',
-        phoneNumberId: 'PHONE_NUMBER_ID_PLACEHOLDER',
+        platformMessageId: 'wamid.TEST_BOOK_MEETING_0001',
         contactName: 'Elias',
         text: 'book coffee with Amina tomorrow 10am',
       },
@@ -42,11 +43,11 @@ describe('parseWebhook', () => {
     expect(status).toEqual({
       kind: 'status',
       status: {
+        channel: 'whatsapp',
         id: 'wamid.TEST_OUTBOUND_0001',
         status: 'delivered',
         timestamp: 1790000300,
         recipientId: '256770000001',
-        phoneNumberId: 'PHONE_NUMBER_ID_PLACEHOLDER',
         errorCodes: [],
       },
     })

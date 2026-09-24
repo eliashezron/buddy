@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createLogger } from '@wa/core'
-import { signBody, type WebhookEvent } from '@wa/whatsapp'
+import type { ChannelEvent } from '@wa/core'
+import { signBody } from '@wa/whatsapp'
 import { buildServer } from '../src/server.js'
 import { jobIdFor } from '../src/queue.js'
 import { registerRawBodyParser } from '../src/webhook.js'
@@ -17,7 +18,7 @@ function fixtureBody(name: string): string {
 }
 
 describe('api', () => {
-  let enqueued: WebhookEvent[][]
+  let enqueued: ChannelEvent[][]
   let app: ReturnType<typeof buildServer>
   let failEnqueue = false
 
@@ -128,13 +129,13 @@ describe('api', () => {
 
 describe('jobIdFor', () => {
   it('is stable per message id and distinguishes status transitions', () => {
-    const msg = (id: string): WebhookEvent => ({
+    const msg = (id: string): ChannelEvent => ({
       kind: 'message',
-      message: { id, from: 'x', timestamp: 1, type: 'text', phoneNumberId: 'p' },
+      message: { channel: 'whatsapp', id, from: 'x', timestamp: 1, type: 'text', platformMessageId: id },
     })
-    const st = (status: string): WebhookEvent => ({
+    const st = (status: string): ChannelEvent => ({
       kind: 'status',
-      status: { id: 'wamid.A', status, timestamp: 1, recipientId: 'x', phoneNumberId: 'p', errorCodes: [] },
+      status: { channel: 'whatsapp', id: 'wamid.A', status, timestamp: 1, recipientId: 'x', errorCodes: [] },
     })
     expect(jobIdFor(msg('wamid.A'))).toBe(jobIdFor(msg('wamid.A')))
     expect(jobIdFor(msg('wamid.A'))).not.toBe(jobIdFor(msg('wamid.B')))

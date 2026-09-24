@@ -1,6 +1,6 @@
 import Fastify, { LogController } from 'fastify'
-import type { Logger } from '@wa/core'
-import type { WebhookEvent } from '@wa/whatsapp'
+import type { ChannelEvent, Logger } from '@wa/core'
+import { telegramRoutes } from './telegram.js'
 import { webhookRoutes } from './webhook.js'
 
 export interface ServerDeps {
@@ -8,7 +8,9 @@ export interface ServerDeps {
   version: string
   appSecret: string
   verifyToken: string
-  enqueue: (events: WebhookEvent[]) => Promise<void>
+  enqueue: (events: ChannelEvent[]) => Promise<void>
+  /** Set to accept Telegram webhooks (webhook mode only). */
+  telegramSecretToken?: string
 }
 
 export function buildServer(deps: ServerDeps) {
@@ -29,6 +31,9 @@ export function buildServer(deps: ServerDeps) {
   app.get('/health', async () => ({ ok: true, version: deps.version }))
 
   app.register(webhookRoutes, { appSecret: deps.appSecret, verifyToken: deps.verifyToken, enqueue: deps.enqueue })
+  if (deps.telegramSecretToken) {
+    app.register(telegramRoutes, { secretToken: deps.telegramSecretToken, enqueue: deps.enqueue })
+  }
 
   return app
 }
