@@ -31,6 +31,14 @@ const baseEnvSchema = z.object({
   TELEGRAM_WEBHOOK_SECRET: z.string().regex(/^[\w-]{32,256}$/, 'use 32–256 chars of A-Z, a-z, 0-9, _ or -').optional(),
   // webhook: Telegram POSTs to /telegram/webhook. polling: the api long-polls (local dev, no tunnel).
   TELEGRAM_MODE: z.enum(['webhook', 'polling']).default('webhook'),
+  // Polling refuses to start while a webhook is registered (it would take the bot away
+  // from production). Set to true to take over anyway.
+  TELEGRAM_POLLING_TAKEOVER: z.stringbool().default(false),
+
+  // Public https base URL of the api. In webhook mode the api registers
+  // <url>/telegram/webhook with Telegram on boot. Render sets RENDER_EXTERNAL_URL itself.
+  PUBLIC_BASE_URL: z.url({ protocol: /^https$/ }).optional(),
+  RENDER_EXTERNAL_URL: z.url().optional(),
 
   DEFAULT_TIMEZONE: z.string().default('Africa/Kampala'),
   MESSAGE_RETENTION_DAYS: z.coerce.number().int().positive().default(30),

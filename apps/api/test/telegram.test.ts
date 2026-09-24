@@ -3,7 +3,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createLogger, type ChannelEvent } from '@wa/core'
 import { buildServer } from '../src/server.js'
-import { startTelegramPoller } from '../src/telegram.js'
+import { registerTelegramWebhook, startTelegramPoller } from '../src/telegram.js'
 
 const SECRET = 'tg-secret-0123456789-abcdefghijklmnop'
 const logger = createLogger({ name: 'test', level: 'silent' })
@@ -86,6 +86,7 @@ describe('Telegram poller', () => {
       logger,
       retryDelayMs: 1,
       client: {
+        getWebhookInfo: async () => ({ url: '', pending_update_count: 0 }),
         deleteWebhook: async () => void (deleted = true),
         getUpdates: async (offset: number, _t: number, signal?: AbortSignal) => {
           offsets.push(offset)
@@ -109,5 +110,70 @@ describe('Telegram poller', () => {
     expect(deleted).toBe(true)
     expect(offsets).toEqual([0, 0, 900000006, 900000003])
     expect(enqueued.map((e) => e[0]?.kind === 'message' && e[0].message.id)).toEqual(['555000111:41', '555000111:40'])
+  })
+})
+
+describe('Telegram poller safety', () => {
+  it('refuses to poll (and leaves the webhook alone) when a webhook is registered', async () => {
+    let deleted = false
+    let polled = false
+    const poller = startTelegramPoller({
+      logger,
+      client: {
+        getWebhookInfo: async () => ({ url: 'https://buddy-api.onrender.com/telegram/webhook', pending_update_count: 0 }),
+        deleteWebhook: async () => void (deleted = true),
+        getUpdates: async () => ((polled = true), []),
+      } as never,
+      enqueue: async () => {},
+    })
+    await poller.stop()
+    expect(deleted).toBe(false)
+    expect(polled).toBe(false)
+  })
+
+  it('takes over only when explicitly allowed', async () => {
+    let deleted = false
+    let resolvePolled!: () => void
+    const polled = new Promise<void>((r) => (resolvePolled = r))
+    const poller = startTelegramPoller({
+      logger,
+      takeover: true,
+      client: {
+        getWebhookInfo: async () => ({ url: 'https://buddy-api.onrender.com/telegram/webhook', pending_update_count: 0 }),
+        deleteWebhook: async () => void (deleted = true),
+        getUpdates: async (_o: number, _t: number, signal?: AbortSignal) => {
+          resolvePolled()
+          return new Promise((_, reject) => signal?.addEventListener('abort', () => reject(new Error('aborted'))))
+        },
+      } as never,
+      enqueue: async () => {},
+    })
+    await polled
+    await poller.stop()
+    expect(deleted).toBe(true)
+  })
+})
+
+describe('registerTelegramWebhook', () => {
+  it('registers <base>/telegram/webhook with the secret', async () => {
+    const calls: [string, string][] = []
+    const ok = await registerTelegramWebhook({
+      client: { setWebhook: async (url: string, secret: string) => void calls.push([url, secret]) },
+      baseUrl: 'https://buddy-api.onrender.com/',
+      secretToken: SECRET,
+      logger,
+    })
+    expect(ok).toBe(true)
+    expect(calls).toEqual([['https://buddy-api.onrender.com/telegram/webhook', SECRET]])
+  })
+
+  it('logs and carries on when Telegram rejects it', async () => {
+    const ok = await registerTelegramWebhook({
+      client: { setWebhook: async () => { throw new Error('bad webhook: HTTPS url must be provided') } },
+      baseUrl: 'https://x.example',
+      secretToken: SECRET,
+      logger,
+    })
+    expect(ok).toBe(false)
   })
 })

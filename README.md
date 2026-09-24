@@ -81,6 +81,12 @@ branch deletion are blocked.
 
 Run the evals by hand from the Actions tab: "CI" → "Run workflow" → tick *evals*.
 
+## Deploying
+
+Production runs on Render from [`render.yaml`](render.yaml): api, worker, Postgres and
+Key Value in Frankfurt, deployed from `main` only after CI passes. First deploy and
+operations: [`docs/deploy-render.md`](docs/deploy-render.md).
+
 ## Connecting a real number
 
 1. Follow `docs/whatsapp-notes.md` §2 (Meta app, WABA, system-user token).

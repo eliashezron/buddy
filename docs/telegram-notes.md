@@ -37,12 +37,18 @@ TELEGRAM_MODE=polling
 The api long-polls `getUpdates` and enqueues updates exactly like the webhook. Polling
 deletes any registered webhook first, because Telegram refuses `getUpdates` while one is set.
 
+Use a **separate dev bot** for local work once production exists: polling refuses to
+start while the bot has a webhook registered, so it can't silently take the production
+bot away (override with `TELEGRAM_POLLING_TAKEOVER=true`).
+
 ### Production: webhook
 
 ```
 TELEGRAM_MODE=webhook
 TELEGRAM_WEBHOOK_SECRET=$(openssl rand -hex 32)
-pnpm telegram set-webhook https://<public-host>   # registers <host>/telegram/webhook
+PUBLIC_BASE_URL=https://<public-host>            # the api registers the webhook on boot
+                                                 # (on Render: automatic via RENDER_EXTERNAL_URL)
+pnpm telegram set-webhook https://<public-host>   # manual alternative
 pnpm telegram info                               # pending updates, last delivery error
 ```
 

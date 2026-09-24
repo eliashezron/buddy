@@ -31,7 +31,29 @@ export const telegramRoutes: FastifyPluginAsync<TelegramRouteOptions> = async (a
   })
 }
 
-type PollingClient = Pick<BotApiClient, 'getUpdates' | 'deleteWebhook'>
+type PollingClient = Pick<BotApiClient, 'getUpdates' | 'deleteWebhook' | 'getWebhookInfo'>
+
+/**
+ * Webhook mode: point Telegram at this deployment on every boot. Idempotent, and it
+ * re-sends the secret token, so rotating TELEGRAM_WEBHOOK_SECRET takes effect on redeploy.
+ */
+export async function registerTelegramWebhook(deps: {
+  client: Pick<BotApiClient, 'setWebhook'>
+  baseUrl: string
+  secretToken: string
+  logger: Logger
+}): Promise<boolean> {
+  const url = `${deps.baseUrl.replace(/\/$/, '')}/telegram/webhook`
+  try {
+    await deps.client.setWebhook(url, deps.secretToken)
+    deps.logger.info({ url }, 'telegram webhook registered')
+    return true
+  } catch (err) {
+    // Keep serving: WhatsApp and /health don't depend on this.
+    deps.logger.error({ err, url }, 'telegram webhook registration failed')
+    return false
+  }
+}
 
 /**
  * Long polling for local development: no public URL or tunnel needed. Advances the
@@ -44,13 +66,26 @@ export function startTelegramPoller(deps: {
   logger: Logger
   timeoutSec?: number
   retryDelayMs?: number
+  /** Delete an existing webhook and poll anyway. */
+  takeover?: boolean
 }) {
   const controller = new AbortController()
   const { signal } = controller
   let offset = 0
 
   async function loop() {
-    // getUpdates is refused while a webhook is set.
+    // getUpdates is refused while a webhook is set, and deleting someone else's webhook
+    // (e.g. production's, from a laptop sharing the bot token) takes that bot offline.
+    const { url } = await deps.client.getWebhookInfo()
+    if (url && !deps.takeover) {
+      deps.logger.error(
+        { webhookHost: new URL(url).host },
+        'telegram polling NOT started: a webhook is registered for this bot. Use a separate dev bot, ' +
+          'or set TELEGRAM_POLLING_TAKEOVER=true to take it over (this disconnects that deployment).',
+      )
+      return
+    }
+    if (url) deps.logger.warn({ webhookHost: new URL(url).host }, 'taking over telegram bot from registered webhook')
     await deps.client.deleteWebhook()
     deps.logger.info('telegram polling started')
     while (!signal.aborted) {

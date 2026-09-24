@@ -68,6 +68,14 @@ describe('loadConfig', () => {
     expect(() => loadConfig(envSchema, { ...valid, TELEGRAM_BOT_TOKEN: 'not-a-token' })).toThrow(/Invalid: TELEGRAM_BOT_TOKEN/)
   })
 
+  it('parses deploy settings: https-only PUBLIC_BASE_URL, boolean takeover flag', () => {
+    const c = loadConfig(envSchema, { ...valid, PUBLIC_BASE_URL: 'https://buddy-api.onrender.com', TELEGRAM_POLLING_TAKEOVER: 'true' })
+    expect(c.PUBLIC_BASE_URL).toBe('https://buddy-api.onrender.com')
+    expect(c.TELEGRAM_POLLING_TAKEOVER).toBe(true)
+    expect(loadConfig(envSchema, valid).TELEGRAM_POLLING_TAKEOVER).toBe(false)
+    expect(() => loadConfig(envSchema, { ...valid, PUBLIC_BASE_URL: 'http://insecure.example' })).toThrow(/Invalid: PUBLIC_BASE_URL/)
+  })
+
   it('lets db:migrate run with only DATABASE_URL', () => {
     expect(loadConfig(dbEnvSchema, { DATABASE_URL: valid.DATABASE_URL }).DATABASE_URL).toBe(valid.DATABASE_URL)
   })
