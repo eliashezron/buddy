@@ -20,6 +20,8 @@ const CONTENT_KEYS = new Set([
   'messages',
 ])
 const SECRET_KEY = /token|secret|password|passwd|authorization|api[-_]?key|cookie|signature/i
+// Usage counters (inputTokens, max_tokens) are metrics, not credentials.
+const TOKEN_COUNT_KEY = /tokens$/i
 const PHONE_KEYS = new Set([
   'from',
   'to',
@@ -63,7 +65,7 @@ export function sanitize(value: unknown, depth = 0, seen = new WeakSet<object>()
   for (const [key, v] of Object.entries(value)) {
     const k = key.toLowerCase()
     if (v === undefined || v === null) out[key] = v
-    else if (SECRET_KEY.test(k) || CONTENT_KEYS.has(k)) out[key] = REDACTED
+    else if ((SECRET_KEY.test(k) && !TOKEN_COUNT_KEY.test(k)) || CONTENT_KEYS.has(k)) out[key] = REDACTED
     else if (PHONE_KEYS.has(k) && (typeof v === 'string' || typeof v === 'number')) out[key] = maskPhone(v)
     else out[key] = sanitize(v, depth + 1, seen)
   }

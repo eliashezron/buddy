@@ -59,6 +59,11 @@ describe('logger redaction', () => {
     expect(out.err.cause).toMatchObject({ type: 'TimeoutError', message: 'The operation was aborted due to timeout' })
   })
 
+  it('keeps token usage counts but redacts token credentials', () => {
+    const out = sanitize({ inputTokens: 120, output_tokens: 40, accessToken: 'EAAG', refresh_token: 'r', token: 't' })
+    expect(out).toEqual({ inputTokens: 120, output_tokens: 40, accessToken: REDACTED, refresh_token: REDACTED, token: REDACTED })
+  })
+
   it('survives circular structures', () => {
     const a: Record<string, unknown> = { id: 1 }
     a.self = a
