@@ -1,6 +1,18 @@
-import { and, desc, eq, gte, inArray, isNotNull, lt, ne } from 'drizzle-orm'
+import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, ne } from 'drizzle-orm'
 import type { Db } from './client.js'
-import { actions, agentRuns, messages, users, type ActionStatus, type Channel, type User } from './schema.js'
+import {
+  actions,
+  agentRuns,
+  connections,
+  messages,
+  oauthStates,
+  users,
+  type ActionStatus,
+  type Channel,
+  type Connection,
+  type OAuthState,
+  type User,
+} from './schema.js'
 
 export type Risk = (typeof actions.$inferInsert)['risk']
 
@@ -167,6 +179,98 @@ export function createRepo(db: Db) {
       patch: { status: ActionStatus; result?: unknown; error?: string; undoExpiresAt?: Date },
     ) {
       await db.update(actions).set(patch).where(eq(actions.id, id))
+    },
+
+    async getUserById(id: string): Promise<User | null> {
+      return (await db.query.users.findFirst({ where: eq(users.id, id) })) ?? null
+    },
+
+    async getMessageById(id: string) {
+      return (await db.query.messages.findFirst({ where: eq(messages.id, id) })) ?? null
+    },
+
+    /** Most recent successful low_write action whose undo window is still open. */
+    async latestUndoableAction(userId: string, now: Date) {
+      return (
+        (await db.query.actions.findFirst({
+          where: and(
+            eq(actions.userId, userId),
+            eq(actions.risk, 'low_write'),
+            eq(actions.status, 'succeeded'),
+            gt(actions.undoExpiresAt, now),
+          ),
+          orderBy: desc(actions.createdAt),
+        })) ?? null
+      )
+    },
+
+    // --- connectors ---
+
+    async getConnection(userId: string, provider: Connection['provider']): Promise<Connection | null> {
+      return (
+        (await db.query.connections.findFirst({
+          where: and(eq(connections.userId, userId), eq(connections.provider, provider)),
+        })) ?? null
+      )
+    },
+
+    async upsertConnection(input: {
+      userId: string
+      provider: Connection['provider']
+      accountEmail: string | null
+      scopes: string[]
+      refreshTokenEnc: string
+      accessTokenEnc: string
+      accessTokenExpiresAt: Date
+    }) {
+      await db
+        .insert(connections)
+        .values(input)
+        .onConflictDoUpdate({
+          target: [connections.userId, connections.provider],
+          set: {
+            accountEmail: input.accountEmail,
+            scopes: input.scopes,
+            refreshTokenEnc: input.refreshTokenEnc,
+            accessTokenEnc: input.accessTokenEnc,
+            accessTokenExpiresAt: input.accessTokenExpiresAt,
+          },
+        })
+    },
+
+    async updateAccessToken(id: string, accessTokenEnc: string, accessTokenExpiresAt: Date) {
+      await db.update(connections).set({ accessTokenEnc, accessTokenExpiresAt }).where(eq(connections.id, id))
+    },
+
+    async deleteConnection(userId: string, provider: Connection['provider']): Promise<boolean> {
+      const rows = await db
+        .delete(connections)
+        .where(and(eq(connections.userId, userId), eq(connections.provider, provider)))
+        .returning({ id: connections.id })
+      return rows.length > 0
+    },
+
+    async createOAuthState(input: Omit<OAuthState, 'createdAt' | 'usedAt'>) {
+      await db.insert(oauthStates).values(input)
+    },
+
+    /** A state that is unused and unexpired, without consuming it (the start redirect). */
+    async findLiveOAuthState(tokenHash: string, now: Date): Promise<OAuthState | null> {
+      return (
+        (await db.query.oauthStates.findFirst({
+          where: and(eq(oauthStates.tokenHash, tokenHash), isNull(oauthStates.usedAt), gt(oauthStates.expiresAt, now)),
+        })) ?? null
+      )
+    },
+
+    /** Atomically marks a live state used and returns it; null if unknown, expired or already used. */
+    async consumeOAuthState(tokenHash: string, now: Date): Promise<OAuthState | null> {
+      const [row] = await db
+        .update(oauthStates)
+        .set({ usedAt: now })
+        .where(and(eq(oauthStates.tokenHash, tokenHash), isNull(oauthStates.usedAt), gt(oauthStates.expiresAt, now)))
+        .returning()
+      return row ?? null
     },
 
     /** Retention (PRD: raw bodies kept 30 days). Keeps the row for audit, drops the content. */

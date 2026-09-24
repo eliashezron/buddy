@@ -1,5 +1,7 @@
 export * from './channel.js'
 export * from './config.js'
+export * from './connections.js'
+export * from './crypto.js'
 export * from './logger.js'
 export * from './policy.js'
 export * from './queues.js'

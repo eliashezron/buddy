@@ -88,6 +88,7 @@ export const actionStatus = pgEnum('action_status', [
   'awaiting_approval',
   'expired',
   'cancelled',
+  'undone',
 ])
 
 /** No tool runs without a row here: written before execution, updated after. */
@@ -116,7 +117,59 @@ export const actions = pgTable(
   (t) => [index('actions_user_idx').on(t.userId, t.createdAt), index('actions_run_idx').on(t.runId)],
 )
 
+export const provider = pgEnum('provider', ['google'])
+
+/**
+ * A user's linked account at a provider. Tokens are encrypted (TokenCipher, AAD bound
+ * to user + provider); nothing here is usable without the encryption key.
+ */
+export const connections = pgTable(
+  'connections',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    provider: provider('provider').notNull(),
+    /** The provider account's email, shown back to the user ("connected as …"). */
+    accountEmail: text('account_email'),
+    /** OAuth scopes the user actually granted (they can untick some). */
+    scopes: text('scopes').array().notNull(),
+    refreshTokenEnc: text('refresh_token_enc').notNull(),
+    accessTokenEnc: text('access_token_enc'),
+    accessTokenExpiresAt: timestamp('access_token_expires_at', { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => sql`now()`),
+  },
+  (t) => [uniqueIndex('connections_user_provider_key').on(t.userId, t.provider)],
+)
+
+/**
+ * One-time OAuth link state. Only a SHA-256 hash of the token in the link is stored,
+ * so a database leak can't be replayed. Expires after 15 minutes; used once.
+ */
+export const oauthStates = pgTable('oauth_states', {
+  tokenHash: text('token_hash').primaryKey(),
+  userId: uuid('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  provider: provider('provider').notNull(),
+  /** Capabilities requested (see CAPABILITIES in @wa/core). */
+  capabilities: text('capabilities').array().notNull(),
+  codeVerifierEnc: text('code_verifier_enc').notNull(),
+  /** The message that needed the connection; re-run after the user connects. */
+  triggerMessageId: uuid('trigger_message_id').references(() => messages.id, { onDelete: 'set null' }),
+  createdAt: createdAt(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  usedAt: timestamp('used_at', { withTimezone: true }),
+})
+
 export type Channel = (typeof channel.enumValues)[number]
+export type Connection = typeof connections.$inferSelect
+export type OAuthState = typeof oauthStates.$inferSelect
 export type User = typeof users.$inferSelect
 export type Message = typeof messages.$inferSelect
 export type Action = typeof actions.$inferSelect

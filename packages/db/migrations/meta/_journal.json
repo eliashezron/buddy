@@ -29,6 +29,13 @@
       "when": 1790260306922,
       "tag": "0003_channels_finalise",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1790269628072,
+      "tag": "0004_connectors",
+      "breakpoints": true
     }
   ]
 }
