@@ -1,7 +1,7 @@
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { createLogger } from '@wa/core'
+import { createLogger, noServices } from '@wa/core'
 import { extractText, fetchPage } from '../src/fetch-page.js'
 
 const ctx = {
@@ -11,6 +11,7 @@ const ctx = {
   timezone: 'Africa/Kampala',
   now: new Date(),
   logger: createLogger({ name: 'test', level: 'silent' }),
+  services: noServices(),
 }
 
 describe('extractText', () => {

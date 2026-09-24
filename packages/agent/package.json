@@ -15,6 +15,11 @@
     "typecheck": "tsc -p tsconfig.json",
     "evals": "tsx --conditions=development --env-file-if-exists=../../.env evals/run.ts"
   },
-  "dependencies": { "@anthropic-ai/sdk": "^0.128.0", "@wa/core": "workspace:*", "@wa/tools": "workspace:*", "zod": "^4.6.5" },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
+    "@wa/core": "workspace:*",
+    "@wa/tools": "workspace:*",
+    "zod": "^4.6.5"
+  },
   "devDependencies": {}
 }

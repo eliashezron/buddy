@@ -1,6 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import { describe, expect, it } from 'vitest'
-import { createLogger } from '@wa/core'
+import { createLogger, noServices } from '@wa/core'
 import { collectSearchOutput, createWebSearchTool } from '../src/web-search.js'
 
 type Block = Anthropic.Beta.Messages.BetaContentBlock
@@ -47,7 +47,7 @@ describe('web_search tool', () => {
     const tool = createWebSearchTool({ anthropic, model: 'claude-sonnet-5' })
     const out = await tool.execute(
       { query: 'usd to ugx' },
-      { userId: 'u', runId: 'r', actionId: 'a', timezone: 'Africa/Kampala', now: new Date('2026-09-24T09:00:00Z'), logger: createLogger({ name: 't', level: 'silent' }) },
+      { userId: 'u', runId: 'r', actionId: 'a', timezone: 'Africa/Kampala', now: new Date('2026-09-24T09:00:00Z'), logger: createLogger({ name: 't', level: 'silent' }), services: noServices() },
     )
     expect(out).toMatchObject({ ok: true, summary: '1 USD ≈ 3,700 UGX.' })
     expect(requests).toHaveLength(2)

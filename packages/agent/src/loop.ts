@@ -1,5 +1,15 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { decide, type AnyTool, type ChannelName, type Logger, type Risk } from '@wa/core'
+import {
+  CAPABILITIES,
+  decide,
+  NeedsConnectionError,
+  type AnyTool,
+  type Capability,
+  type ChannelName,
+  type Logger,
+  type Risk,
+  type ToolServices,
+} from '@wa/core'
 import { z } from 'zod'
 import { buildSystemPrompt, wrapForwarded } from './prompt.js'
 
@@ -12,7 +22,15 @@ export type CreateMessageParams = Anthropic.Beta.Messages.MessageCreateParamsNon
 /** Injected so tests and evals can script the model. Production passes `anthropic.beta.messages.create`. */
 export type CreateMessage = (params: CreateMessageParams, opts?: { signal?: AbortSignal }) => Promise<BetaMessage>
 
-export type ActionStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'awaiting_approval' | 'expired' | 'cancelled'
+export type ActionStatus =
+  | 'pending'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'awaiting_approval'
+  | 'expired'
+  | 'cancelled'
+  | 'undone'
 
 /** Persistence for the `actions` table. No tool runs without a row. */
 export interface ActionLog {
@@ -35,6 +53,8 @@ export interface RunAgentInput {
   user: { id: string; name?: string; timezone: string }
   /** Which chat app this conversation is on; shapes the prompt. */
   channel: ChannelName
+  /** Per-user credentials, connections and undo for tools. */
+  services: ToolServices
   history: HistoryTurn[]
   message: { text: string; forwarded?: boolean }
   now?: Date
@@ -46,13 +66,15 @@ export interface ToolCallRecord {
   name: string
   input: unknown
   actionId?: string
-  outcome: 'succeeded' | 'failed' | 'blocked' | 'invalid'
+  outcome: 'succeeded' | 'failed' | 'blocked' | 'invalid' | 'needs_connection'
 }
 
 export interface RunAgentResult {
   status: 'succeeded' | 'refused' | 'failed'
   reply: string
   toolCalls: ToolCallRecord[]
+  /** Capabilities a tool needed but the user hasn't granted: the caller sends a connect link. */
+  connectionRequests: Capability[]
   usage: { inputTokens: number; outputTokens: number }
 }
 
@@ -72,8 +94,31 @@ export function isTransientModelError(err: unknown): boolean {
 export const REFUSAL_REPLY = "Sorry, I can't help with that one."
 export const FAILURE_REPLY = "Sorry, something went wrong on my side. Please try again in a moment."
 
-function toolParam(tool: AnyTool): Anthropic.Beta.Messages.BetaTool {
-  const { $schema: _ignored, ...schema } = z.toJSONSchema(tool.input) as Record<string, unknown>
+const NUMERIC_BOUNDS = ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf'] as const
+
+/**
+ * Strict tool use rejects numeric bounds (400: "For 'integer' type, properties maximum,
+ * minimum are not supported"). Move them into the description so the model still sees
+ * the range; zod enforces it before any tool runs.
+ */
+export function toStrictSchema(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(toStrictSchema)
+  if (!node || typeof node !== 'object') return node
+  const out: Record<string, unknown> = {}
+  const bounds: string[] = []
+  for (const [key, value] of Object.entries(node)) {
+    if ((NUMERIC_BOUNDS as readonly string[]).includes(key)) bounds.push(`${key} ${String(value)}`)
+    else out[key] = toStrictSchema(value)
+  }
+  if (bounds.length) {
+    const note = `(${bounds.join(', ')})`
+    out.description = typeof out.description === 'string' ? `${out.description} ${note}` : note
+  }
+  return out
+}
+
+export function toolParam(tool: AnyTool): Anthropic.Beta.Messages.BetaTool {
+  const { $schema: _ignored, ...schema } = toStrictSchema(z.toJSONSchema(tool.input)) as Record<string, unknown>
   return {
     name: tool.name,
     description: tool.description,
@@ -111,6 +156,14 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
   const toolParams = tools.map(toolParam)
   const usage = { inputTokens: 0, outputTokens: 0 }
   const toolCalls: ToolCallRecord[] = []
+  const connectionRequests = new Set<Capability>()
+  const done = (status: RunAgentResult['status'], reply: string): RunAgentResult => ({
+    status,
+    reply,
+    toolCalls,
+    connectionRequests: [...connectionRequests],
+    usage,
+  })
 
   const current = input.message.forwarded ? wrapForwarded(input.message.text) : input.message.text
   const messages = buildMessages(input.history, current)
@@ -155,6 +208,7 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
       timezone: user.timezone,
       now,
       logger: logger.child({ tool: tool.name, actionId }),
+      services: input.services,
       ...(input.signal ? { signal: input.signal } : {}),
     }
     try {
@@ -163,11 +217,35 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
       await actions.update(actionId, {
         status: failed ? 'failed' : 'succeeded',
         result: output,
-        ...(decision.kind === 'run_with_undo' ? { undoExpiresAt: new Date(Date.now() + decision.undoWindowMs) } : {}),
+        ...(decision.kind === 'run_with_undo' && tool.undo && !failed
+          ? { undoExpiresAt: new Date(Date.now() + decision.undoWindowMs) }
+          : {}),
       })
       toolCalls.push({ name: tool.name, input: parsed.data, actionId, outcome: failed ? 'failed' : 'succeeded' })
       return result(output, failed)
     } catch (err) {
+      if (err instanceof NeedsConnectionError) {
+        // Just-in-time permission: the system sends a one-time connect link for exactly
+        // these capabilities. The model must not write links itself.
+        for (const c of err.capabilities) connectionRequests.add(c)
+        await actions.update(actionId, { status: 'failed', error: `needs_connection:${err.problem}` })
+        toolCalls.push({ name: tool.name, input: parsed.data, actionId, outcome: 'needs_connection' })
+        const products = [...new Set(err.capabilities.map((c) => CAPABILITIES[c].product))].join(' and ')
+        return result(
+          {
+            ok: false,
+            error: err.problem === 'missing_permission' ? 'permission_needed' : 'not_connected',
+            product: products,
+            needs: err.capabilities.map((c) => CAPABILITIES[c].label),
+            note:
+              `A secure one-time link to connect ${products} is being sent to the user right after your reply. ` +
+              'Tell them briefly that it is coming and what it will let you do. Do not write any link or URL ' +
+              'yourself, and do not ask for passwords. Do not retry this tool now; it is re-run automatically ' +
+              'after they connect.',
+          },
+          true,
+        )
+      }
       const message = err instanceof Error ? err.message : String(err)
       await actions.update(actionId, { status: 'failed', error: message })
       toolCalls.push({ name: tool.name, input: parsed.data, actionId, outcome: 'failed' })
@@ -200,7 +278,7 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
     usage.outputTokens += response.usage.output_tokens
 
     if (response.stop_reason === 'refusal') {
-      return { status: 'refused', reply: REFUSAL_REPLY, toolCalls, usage }
+      return done('refused', REFUSAL_REPLY)
     }
     if (response.stop_reason === 'pause_turn') {
       messages.push({ role: 'assistant', content: response.content })
@@ -210,12 +288,12 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
     const toolUses = response.content.filter((b): b is BetaToolUseBlock => b.type === 'tool_use')
     if (toolUses.length === 0) {
       const reply = textOf(response)
-      if (!reply) return { status: 'failed', reply: FAILURE_REPLY, toolCalls, usage }
-      return { status: 'succeeded', reply, toolCalls, usage }
+      if (!reply) return done('failed', FAILURE_REPLY)
+      return done('succeeded', reply)
     }
     if (response.stop_reason === 'max_tokens') {
       logger.warn({ runId }, 'tool input truncated at max_tokens')
-      return { status: 'failed', reply: FAILURE_REPLY, toolCalls, usage }
+      return done('failed', FAILURE_REPLY)
     }
 
     messages.push({ role: 'assistant', content: response.content })
@@ -224,5 +302,5 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
     messages.push({ role: 'user', content: results })
   }
 
-  return { status: 'failed', reply: FAILURE_REPLY, toolCalls, usage }
+  return done('failed', FAILURE_REPLY)
 }
