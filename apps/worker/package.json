@@ -1,0 +1,37 @@
+{
+  "name": "@wa/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./inbound": {
+      "development": "./src/inbound.ts",
+      "types": "./dist/inbound.d.ts",
+      "default": "./dist/inbound.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "dev": "tsx watch --conditions=development --env-file-if-exists=../../.env src/index.ts",
+    "start": "node --env-file-if-exists=../../.env dist/index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
+    "@wa/agent": "workspace:*",
+    "@wa/core": "workspace:*",
+    "@wa/db": "workspace:*",
+    "@wa/tools": "workspace:*",
+    "@wa/whatsapp": "workspace:*",
+    "bullmq": "^6.3.8",
+    "ioredis": "^6.0.0"
+  },
+  "devDependencies": {
+    "zod": "^4.6.5"
+  }
+}
