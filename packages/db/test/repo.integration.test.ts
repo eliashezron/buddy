@@ -17,14 +17,14 @@ describe.skipIf(!url)('repo (postgres)', () => {
 
   it('never moves last_inbound_at backwards (webhooks are unordered)', async () => {
     const waId = `2567${suffix}01`
-    await repo.upsertUserOnInbound({ waId, at: new Date('2026-09-24T10:00:00Z'), timezone: 'Africa/Kampala' })
-    await repo.upsertUserOnInbound({ waId, at: new Date('2026-09-24T09:00:00Z'), timezone: 'Africa/Kampala' })
-    expect(await repo.getLastInboundAt(waId)).toEqual(new Date('2026-09-24T10:00:00Z'))
+    await repo.upsertUserOnInbound({ channel: 'whatsapp', externalId: waId, at: new Date('2026-09-24T10:00:00Z'), timezone: 'Africa/Kampala' })
+    await repo.upsertUserOnInbound({ channel: 'whatsapp', externalId: waId, at: new Date('2026-09-24T09:00:00Z'), timezone: 'Africa/Kampala' })
+    expect(await repo.getLastInboundAt('whatsapp', waId)).toEqual(new Date('2026-09-24T10:00:00Z'))
   })
 
   it('deduplicates inbound messages on wa_message_id', async () => {
-    const user = await repo.upsertUserOnInbound({ waId: `2567${suffix}02`, at: new Date(), timezone: 'Africa/Kampala' })
-    const m = { userId: user.id, waMessageId: `wamid.IT_${suffix}`, type: 'text', body: 'hi', sentAt: new Date() }
+    const user = await repo.upsertUserOnInbound({ channel: 'whatsapp', externalId: `2567${suffix}02`, at: new Date(), timezone: 'Africa/Kampala' })
+    const m = { userId: user.id, channel: 'whatsapp' as const, externalMessageId: `wamid.IT_${suffix}`, type: 'text', body: 'hi', sentAt: new Date() }
     const first = await repo.insertInboundMessage(m)
     const second = await repo.insertInboundMessage(m)
     expect(first.isNew).toBe(true)
@@ -35,11 +35,21 @@ describe.skipIf(!url)('repo (postgres)', () => {
     expect(await repo.hasCompletedRun(first.id)).toBe(true)
   })
 
+  it('keeps the same external id apart across channels', async () => {
+    const id = `55${suffix}`
+    const wa = await repo.upsertUserOnInbound({ channel: 'whatsapp', externalId: id, at: new Date(), timezone: 'Africa/Kampala' })
+    const tg = await repo.upsertUserOnInbound({ channel: 'telegram', externalId: id, at: new Date(), timezone: 'Africa/Kampala' })
+    expect(wa.id).not.toBe(tg.id)
+    const a = await repo.insertInboundMessage({ userId: tg.id, channel: 'telegram', externalMessageId: `${id}:1`, type: 'text', body: 'x', sentAt: new Date() })
+    const b = await repo.insertInboundMessage({ userId: wa.id, channel: 'whatsapp', externalMessageId: `${id}:1`, type: 'text', body: 'x', sentAt: new Date() })
+    expect(a.isNew && b.isNew).toBe(true)
+  })
+
   it('ignores out-of-order status regressions', async () => {
-    const user = await repo.upsertUserOnInbound({ waId: `2567${suffix}03`, at: new Date(), timezone: 'Africa/Kampala' })
-    const waMessageId = `wamid.OUT_${suffix}`
-    await repo.insertOutboundMessage({ userId: user.id, waMessageId, body: 'x', sentAt: new Date() })
-    expect(await repo.applyStatus({ waMessageId, status: 'read', errorCodes: [] })).toBe(true)
-    expect(await repo.applyStatus({ waMessageId, status: 'delivered', errorCodes: [] })).toBe(false)
+    const user = await repo.upsertUserOnInbound({ channel: 'whatsapp', externalId: `2567${suffix}03`, at: new Date(), timezone: 'Africa/Kampala' })
+    const externalMessageId = `wamid.OUT_${suffix}`
+    await repo.insertOutboundMessage({ userId: user.id, channel: 'whatsapp', externalMessageId, body: 'x', sentAt: new Date() })
+    expect(await repo.applyStatus({ channel: 'whatsapp', externalMessageId, status: 'read', errorCodes: [] })).toBe(true)
+    expect(await repo.applyStatus({ channel: 'whatsapp', externalMessageId, status: 'delivered', errorCodes: [] })).toBe(false)
   })
 })

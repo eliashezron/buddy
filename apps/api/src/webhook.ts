@@ -1,12 +1,13 @@
 import { timingSafeEqual } from 'node:crypto'
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify'
-import { InvalidPayloadError, parseWebhook, verifySignature, type WebhookEvent } from '@wa/whatsapp'
+import type { ChannelEvent } from '@wa/core'
+import { InvalidPayloadError, parseWebhook, verifySignature } from '@wa/whatsapp'
 
 export interface WebhookOptions {
   appSecret: string
   verifyToken: string
   /** Must be fast (Redis add). Throwing makes us return 500 so Meta redelivers. */
-  enqueue: (events: WebhookEvent[]) => Promise<void>
+  enqueue: (events: ChannelEvent[]) => Promise<void>
 }
 
 /**
@@ -51,7 +52,7 @@ export const webhookRoutes: FastifyPluginAsync<WebhookOptions> = async (app, opt
       return reply.code(401).send()
     }
 
-    let events: WebhookEvent[]
+    let events: ChannelEvent[]
     try {
       const result = parseWebhook(JSON.parse(raw.toString('utf8')))
       events = result.events

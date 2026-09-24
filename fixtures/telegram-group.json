@@ -1,0 +1,27 @@
+{
+  "_fixture": {
+    "name": "telegram-group",
+    "description": "Message in a group the bot was added to. Expected: skipped; the bot never reads groups.",
+    "expected": {
+      "events": 0,
+      "skipped_reason": "non-private chat"
+    }
+  },
+  "update_id": 900000005,
+  "message": {
+    "message_id": 7,
+    "from": {
+      "id": 555000111,
+      "is_bot": false,
+      "first_name": "Elias",
+      "language_code": "en"
+    },
+    "chat": {
+      "id": -100200300,
+      "title": "Family",
+      "type": "supergroup"
+    },
+    "date": 1790000800,
+    "text": "hey bot, what's the rate?"
+  }
+}

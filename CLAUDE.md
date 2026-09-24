@@ -54,6 +54,7 @@ apps/
   web/            Next.js: onboarding, OAuth consent, settings, admin
 packages/
   whatsapp/       Cloud API client, payload parsers, signature verify, templates
+  telegram/       Bot API client, update parser, secret-token verify, HTML formatting
   agent/          loop, tool registry, prompts, evals
   tools/          one file per tool: calendar, email, notion, search, payments
   db/             drizzle schema + migrations
@@ -71,7 +72,10 @@ fixtures/         saved webhook payloads used by `pnpm replay` and tests
 - One tool per file in `packages/tools`. Every tool needs an eval fixture in
   `packages/agent/evals` before it is considered done.
 - Every outbound WhatsApp send goes through `packages/whatsapp` — never `fetch` the
-  Graph API from a route or a tool.
+  Graph API from a route or a tool. Likewise Telegram goes through `packages/telegram`.
+- Code past the webhook is channel-agnostic: it uses the `Channel` / `ChannelEvent` types
+  in `packages/core`. Telegram is official Bot API only, private chats only; see
+  `docs/telegram-notes.md`.
 - All timestamps stored in UTC; formatted in the user's timezone only at render time.
   Resolve relative dates ("tomorrow 10am") before calling a tool, and echo the
   absolute date back in the confirmation message.

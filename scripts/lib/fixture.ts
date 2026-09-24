@@ -59,9 +59,14 @@ function collectTimestamps(value: Json, out: number[] = []): number[] {
  * Turns a fixture file into what Meta would actually send: `_fixture` removed
  * (production code must never see it) and placeholders filled from env.
  */
+export function isTelegramUpdate(payload: unknown): boolean {
+  return typeof payload === 'object' && payload !== null && 'update_id' in payload
+}
+
 export function normaliseFixture(raw: unknown, opts: NormaliseOptions = {}): Json {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('fixture must be a JSON object')
   const { _fixture: _meta, ...payload } = raw as Record<string, Json>
+  if (isTelegramUpdate(payload)) return normaliseTelegram(payload, opts)
   const env = opts.env ?? {}
   const newest = Math.max(0, ...collectTimestamps(payload))
   const offset = opts.rebaseTo && newest ? Math.floor(opts.rebaseTo.getTime() / 1000) - newest : 0
@@ -80,4 +85,20 @@ export function normaliseFixture(raw: unknown, opts: NormaliseOptions = {}): Jso
 
 export function loadFixture(file: string): unknown {
   return JSON.parse(readFileSync(file, 'utf8'))
+}
+
+/**
+ * Telegram updates: numeric ids and a `date` field. Live replays move the date to now
+ * and shift message_id/update_id so the same fixture can be replayed repeatedly.
+ */
+function normaliseTelegram(payload: Record<string, Json>, opts: NormaliseOptions): Json {
+  const out = structuredClone(payload) as Record<string, any>
+  const shift = opts.idSuffix ? parseInt(opts.idSuffix, 16) : 0
+  if (shift) out.update_id = Number(out.update_id) + shift
+  const message = out.message
+  if (message && typeof message === 'object') {
+    if (opts.rebaseTo) message.date = Math.floor(opts.rebaseTo.getTime() / 1000)
+    if (shift) message.message_id = Number(message.message_id) + shift
+  }
+  return out as Json
 }

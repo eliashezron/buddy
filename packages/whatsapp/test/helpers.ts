@@ -10,5 +10,5 @@ export function fixture(name: string): Record<string, unknown> {
 }
 
 export const fixtureNames = readdirSync(FIXTURES)
-  .filter((f) => f.endsWith('.json'))
+  .filter((f) => f.endsWith('.json') && !f.startsWith('telegram-'))
   .map((f) => f.replace(/\.json$/, ''))

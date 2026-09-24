@@ -15,6 +15,20 @@
       "when": 1790254353088,
       "tag": "0001_core_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790260296859,
+      "tag": "0002_channels_add",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1790260306922,
+      "tag": "0003_channels_finalise",
+      "breakpoints": true
     }
   ]
 }

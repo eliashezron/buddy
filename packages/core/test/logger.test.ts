@@ -64,6 +64,23 @@ describe('logger redaction', () => {
     expect(out).toEqual({ inputTokens: 120, output_tokens: 40, accessToken: REDACTED, refresh_token: REDACTED, token: REDACTED })
   })
 
+  it('redacts Telegram bot tokens inside URLs and error messages', () => {
+    const msg = 'request to https://api.telegram.org/bot123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawQ/sendMessage failed'
+    expect(sanitize(msg)).toBe('request to https://api.telegram.org/bot[REDACTED]/sendMessage failed')
+  })
+
+  it('logs the real error class name for subclassed errors passed as `err`', () => {
+    class ApiError extends Error {
+      override name = 'TelegramApiError'
+      constructor(readonly permanent: boolean) {
+        super('telegram 401: Unauthorized')
+      }
+    }
+    const { logger, lines } = capture()
+    logger.warn({ err: new ApiError(true) }, 'reply dropped')
+    expect(lines[0]!.err).toMatchObject({ type: 'TelegramApiError', message: 'telegram 401: Unauthorized', permanent: true })
+  })
+
   it('survives circular structures', () => {
     const a: Record<string, unknown> = { id: 1 }
     a.self = a
