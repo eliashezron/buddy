@@ -2,7 +2,12 @@ import type Anthropic from '@anthropic-ai/sdk'
 import type { AnyTool } from '@wa/core'
 import { calendarListEvents } from './calendar-list-events.js'
 import { createCalendarEvent } from './create-calendar-event.js'
+import { createDocument } from './create-document.js'
+import { createPresentation } from './create-presentation.js'
+import { createSpreadsheet } from './create-spreadsheet.js'
 import { deleteCalendarEvent } from './delete-calendar-event.js'
+import { driveRead } from './drive-read.js'
+import { driveSearch } from './drive-search.js'
 import { fetchPage } from './fetch-page.js'
 import { gmailCreateDraft } from './gmail-create-draft.js'
 import { gmailRead } from './gmail-read.js'
@@ -18,6 +23,12 @@ export { collectSearchOutput, createWebSearchTool, type Source } from './web-sea
 export { calendarListEvents } from './calendar-list-events.js'
 export { createCalendarEvent } from './create-calendar-event.js'
 export { deleteCalendarEvent } from './delete-calendar-event.js'
+export { createDocument, markdownToHtml, multipartBody } from './create-document.js'
+export { cellValue, createSpreadsheet } from './create-spreadsheet.js'
+export { createPresentation, slideRequests } from './create-presentation.js'
+export { driveRead } from './drive-read.js'
+export { driveSearch } from './drive-search.js'
+export { fileIdFrom } from './google-drive.js'
 export { buildRawEmail, gmailCreateDraft } from './gmail-create-draft.js'
 export { gmailSendEmail } from './gmail-send-email.js'
 export { extractEmailText, gmailRead } from './gmail-read.js'
@@ -44,6 +55,11 @@ export function createTools(deps: ToolDeps): AnyTool[] {
       gmailRead,
       gmailCreateDraft,
       gmailSendEmail,
+      driveSearch,
+      driveRead,
+      createDocument,
+      createSpreadsheet,
+      createPresentation,
       manageConnections,
     )
   return tools
