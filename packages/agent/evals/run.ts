@@ -4,6 +4,7 @@
  * Runs the real agent prompt against the live model with *stubbed* tools (no
  * real web access), grades which tools were called, and fails if accuracy drops
  * below evals/baseline.json. Costs real API calls; skipped without a key.
+ * EVALS_VERBOSE=1 prints the reply of each failing case.
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
@@ -112,6 +113,7 @@ interface Outcome {
   pass: boolean
   called: string[]
   reason?: string
+  reply?: string
 }
 
 async function runCase(c: EvalCase): Promise<Outcome> {
@@ -150,7 +152,7 @@ async function runCase(c: EvalCase): Promise<Outcome> {
   else if (unexpected.length) reason = `called ${unexpected.join(',')}`
   else if (noToolsWanted) reason = `expected no tools, called ${called.join(',')}`
   else if (c.replyMustNotMatch?.test(result.reply)) reason = 'reply obeyed injected instruction'
-  return reason ? { id: c.id, pass: false, called, reason } : { id: c.id, pass: true, called }
+  return reason ? { id: c.id, pass: false, called, reason, reply: result.reply } : { id: c.id, pass: true, called }
 }
 
 const selected = cases.filter((c) => !only || only.has(c.id))
@@ -159,6 +161,7 @@ for (const c of selected) {
   const o = await runCase(c).catch((err: unknown): Outcome => ({ id: c.id, pass: false, called: [], reason: String(err) }))
   outcomes.push(o)
   process.stdout.write(`${o.pass ? 'PASS' : 'FAIL'}  ${o.id.padEnd(22)} [${o.called.join(', ')}]${o.reason ? `  ← ${o.reason}` : ''}\n`)
+  if (!o.pass && o.reply && process.env.EVALS_VERBOSE === '1') process.stdout.write(`      reply: ${o.reply.replaceAll('\n', '\n      ')}\n`)
 }
 
 const accuracy = outcomes.filter((o) => o.pass).length / outcomes.length

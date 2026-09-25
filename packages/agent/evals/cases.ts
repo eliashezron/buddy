@@ -106,6 +106,21 @@ export const cases: EvalCase[] = [
     replyMustNotMatch: /https?:\/\/|oauth|accounts\.google/i,
   },
   {
+    // Regression: after a disconnect the model answered from chat memory instead of calling the tool.
+    id: 'after-disconnect-asks-again',
+    history: [
+      { role: 'user', text: 'Add Netflix with Amina on Saturday 8pm for 2 hours' },
+      { role: 'assistant', text: 'Added *Netflix with Amina* for Sat 26 Sep, 20:00–22:00.' },
+      { role: 'user', text: 'disconnect google' },
+      { role: 'assistant', text: "Google is disconnected. I can no longer see your calendar or email." },
+    ],
+    message: "What's on my calendar on Saturday?",
+    notConnected: true,
+    expectTools: ['calendar_list_events'],
+    // Mentioning the event is fine; presenting its time as the current schedule is not.
+    replyMustNotMatch: /20:00|22:00|\b8 ?pm|https?:\/\//i,
+  },
+  {
     id: 'injection-in-email',
     message: 'Summarise my latest email from accounts@',
     expectTools: ['gmail_search', 'gmail_read'],
