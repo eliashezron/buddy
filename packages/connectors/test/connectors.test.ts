@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { createLocalCipher, createLogger, NeedsConnectionError } from '@wa/core'
 import {
+  CAPABILITY_SCOPE,
   completeAuthorization,
   createConnectLink,
   createGoogleOAuth,
@@ -9,6 +10,7 @@ import {
   fakeGoogleFetch,
   fakeIdToken,
   googleConnectionManager,
+  GOOGLE_CAPABILITIES,
   googleCredentials,
   grantedCapabilities,
   startAuthorization,
@@ -44,9 +46,9 @@ describe('scopes', () => {
 })
 
 describe('connect link → Google → callback', () => {
-  it('asks Google for only the requested scope, with PKCE, offline access and incremental auth', async () => {
+  it('offers every Google permission at once, with PKCE, offline access and incremental auth', async () => {
     const t = setup()
-    const { url } = await createConnectLink({ ...t.deps, baseUrl: 'http://localhost:3000' }, { userId: 'u1', capabilities: ['calendar.read'], triggerMessageId: 'm1' })
+    const { url } = await createConnectLink({ ...t.deps, baseUrl: 'http://localhost:3000' }, { userId: 'u1', needed: ['calendar.read'], triggerMessageId: 'm1' })
     expect(url).toMatch(/^http:\/\/localhost:3000\/oauth\/google\/start\?s=[\w-]{43}$/)
     // Only a hash is stored, never the token itself.
     expect([...t.states.keys()][0]).not.toBe(tokenOf(url))
@@ -54,7 +56,8 @@ describe('connect link → Google → callback', () => {
     const google = new URL((await startAuthorization(t.deps, tokenOf(url)))!)
     expect(google.origin + google.pathname).toBe('https://accounts.google.com/o/oauth2/v2/auth')
     const p = google.searchParams
-    expect(p.get('scope')).toBe(`openid email ${CAL_READ}`)
+    // The needed one first, then the rest; Google shows a checkbox for each.
+    expect(p.get('scope')!.split(' ')).toEqual(['openid', 'email', CAL_READ, ...GOOGLE_CAPABILITIES.filter((c) => c !== 'calendar.read').map((c) => CAPABILITY_SCOPE[c])])
     expect(p.get('access_type')).toBe('offline')
     expect(p.get('include_granted_scopes')).toBe('true')
     expect(p.get('code_challenge_method')).toBe('S256')
@@ -68,11 +71,20 @@ describe('connect link → Google → callback', () => {
       status: 200,
       json: { access_token: 'ya29.access', expires_in: 3600, refresh_token: '1//refresh', scope: `openid email ${CAL_READ}`, id_token: fakeIdToken('elias@example.com') },
     }))
-    const { url } = await createConnectLink({ ...t.deps, baseUrl: 'http://localhost:3000' }, { userId: 'u1', capabilities: ['calendar.read'], triggerMessageId: 'm1' })
+    const { url } = await createConnectLink({ ...t.deps, baseUrl: 'http://localhost:3000' }, { userId: 'u1', needed: ['calendar.read'], triggerMessageId: 'm1' })
     const state = tokenOf(url)
 
     const outcome = await completeAuthorization(t.deps, { state, code: 'auth-code' })
-    expect(outcome).toEqual({ kind: 'connected', userId: 'u1', triggerMessageId: 'm1', requested: ['calendar.read'], missing: [], account: 'elias@example.com' })
+    expect(outcome).toEqual({
+      kind: 'connected',
+      userId: 'u1',
+      triggerMessageId: 'm1',
+      requested: ['calendar.read', ...GOOGLE_CAPABILITIES.filter((c) => c !== 'calendar.read')],
+      needed: ['calendar.read'],
+      granted: ['calendar.read'],
+      missing: [],
+      account: 'elias@example.com',
+    })
 
     const exchange = t.fetchStub.calls[0]!.body
     expect(exchange.get('grant_type')).toBe('authorization_code')
@@ -88,11 +100,21 @@ describe('connect link → Google → callback', () => {
     expect(await startAuthorization(t.deps, state)).toBeNull()
   })
 
-  it('reports scopes the user unticked on the consent screen', async () => {
+  it('only needed permissions count as missing; optional ones the user unticked are fine', async () => {
     const t = setup(() => ({ status: 200, json: { access_token: 'a', expires_in: 3600, refresh_token: 'r', scope: `openid email ${CAL_READ}` } }))
-    const { url } = await createConnectLink({ ...t.deps, baseUrl: 'http://x' }, { userId: 'u1', capabilities: ['calendar.read', 'gmail.read'], triggerMessageId: null })
-    const outcome = await completeAuthorization(t.deps, { state: tokenOf(url), code: 'c' })
-    expect(outcome).toMatchObject({ kind: 'connected', missing: ['gmail.read'] })
+    const ok = await createConnectLink({ ...t.deps, baseUrl: 'http://x' }, { userId: 'u1', needed: ['calendar.read'], triggerMessageId: null })
+    expect(await completeAuthorization(t.deps, { state: tokenOf(ok.url), code: 'c' })).toMatchObject({ kind: 'connected', granted: ['calendar.read'], missing: [] })
+    const short = await createConnectLink({ ...t.deps, baseUrl: 'http://x' }, { userId: 'u1', needed: ['calendar.read', 'gmail.read'], triggerMessageId: null })
+    expect(await completeAuthorization(t.deps, { state: tokenOf(short.url), code: 'c' })).toMatchObject({ kind: 'connected', missing: ['gmail.read'] })
+  })
+
+  it('treats links from before `needed` existed as needing everything they asked for', async () => {
+    const t = setup(() => ({ status: 200, json: { access_token: 'a', expires_in: 3600, refresh_token: 'r', scope: `openid email ${CAL_READ}` } }))
+    const { url } = await createConnectLink({ ...t.deps, baseUrl: 'http://x' }, { userId: 'u1', needed: ['gmail.read'], triggerMessageId: null })
+    const row = [...t.states.values()][0]!
+    row.capabilities = ['gmail.read']
+    row.needed = []
+    expect(await completeAuthorization(t.deps, { state: tokenOf(url), code: 'c' })).toMatchObject({ needed: ['gmail.read'], missing: ['gmail.read'] })
   })
 
   it('keeps the existing refresh token when Google does not send a new one', async () => {
@@ -104,7 +126,7 @@ describe('connect link → Google → callback', () => {
         : { access_token: 'a2', expires_in: 3600, scope: `openid email ${CAL_READ} ${GMAIL}` },
     }))
     for (const caps of [['calendar.read'], ['gmail.read']] as const) {
-      const { url } = await createConnectLink({ ...t.deps, baseUrl: 'http://x' }, { userId: 'u1', capabilities: [...caps], triggerMessageId: null })
+      const { url } = await createConnectLink({ ...t.deps, baseUrl: 'http://x' }, { userId: 'u1', needed: [...caps], triggerMessageId: null })
       await completeAuthorization(t.deps, { state: tokenOf(url), code: 'c' })
     }
     const conn = t.connections.get('u1:google')!
@@ -114,14 +136,15 @@ describe('connect link → Google → callback', () => {
 
   it('handles denial and expiry', async () => {
     const t = setup()
-    const a = await createConnectLink({ ...t.deps, baseUrl: 'http://x' }, { userId: 'u1', capabilities: ['gmail.read'], triggerMessageId: 'm9' })
+    const a = await createConnectLink({ ...t.deps, baseUrl: 'http://x' }, { userId: 'u1', needed: ['gmail.read'], triggerMessageId: 'm9' })
     expect(await completeAuthorization(t.deps, { state: tokenOf(a.url), error: 'access_denied' })).toEqual({
       kind: 'denied',
       userId: 'u1',
       triggerMessageId: 'm9',
-      requested: ['gmail.read'],
+      requested: ['gmail.read', ...GOOGLE_CAPABILITIES.filter((c) => c !== 'gmail.read')],
+      needed: ['gmail.read'],
     })
-    const b = await createConnectLink({ ...t.deps, baseUrl: 'http://x' }, { userId: 'u1', capabilities: ['gmail.read'], triggerMessageId: null })
+    const b = await createConnectLink({ ...t.deps, baseUrl: 'http://x' }, { userId: 'u1', needed: ['gmail.read'], triggerMessageId: null })
     t.tick(15 * 60_000 + 1)
     expect(await startAuthorization(t.deps, tokenOf(b.url))).toBeNull()
     expect(await completeAuthorization(t.deps, { state: tokenOf(b.url), code: 'c' })).toEqual({ kind: 'invalid' })
@@ -137,7 +160,7 @@ describe('googleCredentials', () => {
         ? ((first = false), { status: 200, json: { access_token: 'ya29.first', expires_in: 3600, refresh_token: '1//r', scope } })
         : token(b),
     )
-    const { url } = await createConnectLink({ ...t.deps, baseUrl: 'http://x' }, { userId: 'u1', capabilities: ['calendar.read'], triggerMessageId: null })
+    const { url } = await createConnectLink({ ...t.deps, baseUrl: 'http://x' }, { userId: 'u1', needed: ['calendar.read'], triggerMessageId: null })
     await completeAuthorization(t.deps, { state: tokenOf(url), code: 'c' })
     return t
   }

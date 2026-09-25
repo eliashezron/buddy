@@ -1,6 +1,6 @@
 {
-  "id": "5d5a5cea-6302-4d2f-a3cf-30f882d53695",
-  "prevId": "847be99c-712c-4399-8e5d-3c48c94eccaa",
+  "id": "f9385136-ba16-40c7-a69d-b1bb58362d12",
+  "prevId": "5d5a5cea-6302-4d2f-a3cf-30f882d53695",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -69,6 +69,12 @@
         "approval_expires_at": {
           "name": "approval_expires_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "card": {
+          "name": "card",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },

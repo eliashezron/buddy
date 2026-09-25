@@ -28,7 +28,7 @@ function setup() {
   }
   const enqueued: QueueEvent[] = []
   const app = buildServer({ logger, version: '1', appSecret: 'x', verifyToken: 'x', enqueue: async (e) => void enqueued.push(...e), google })
-  const link = () => createConnectLink({ ...google, baseUrl: 'http://localhost:3000' }, { userId: 'u1', capabilities: ['calendar.read'], triggerMessageId: 'm1' })
+  const link = () => createConnectLink({ ...google, baseUrl: 'http://localhost:3000' }, { userId: 'u1', needed: ['calendar.read'], triggerMessageId: 'm1' })
   return { app, enqueued, link, mem }
 }
 

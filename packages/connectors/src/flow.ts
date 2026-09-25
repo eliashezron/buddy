@@ -8,13 +8,18 @@ export type ConnectOutcome =
       kind: 'connected'
       userId: string
       triggerMessageId: string | null
+      /** Offered on the consent screen. */
       requested: Capability[]
-      /** Requested capabilities the user unticked on Google's consent screen. */
+      /** What the triggering request needs. */
+      needed: Capability[]
+      /** Everything the user has allowed, including earlier grants. */
+      granted: Capability[]
+      /** Needed capabilities the user unticked. Optional ones they unticked are not "missing". */
       missing: Capability[]
       account: string | null
     }
-  | { kind: 'denied'; userId: string; triggerMessageId: string | null; requested: Capability[] }
-  | { kind: 'failed'; userId: string; triggerMessageId: string | null; requested: Capability[]; reason: string }
+  | { kind: 'denied'; userId: string; triggerMessageId: string | null; requested: Capability[]; needed: Capability[] }
+  | { kind: 'failed'; userId: string; triggerMessageId: string | null; requested: Capability[]; needed: Capability[]; reason: string }
   /** Unknown, expired or already-used link. Nothing to tell the chat about. */
   | { kind: 'invalid' }
 
@@ -44,7 +49,10 @@ export async function completeAuthorization(
   const tokenHash = hashToken(params.state)
   const state = await deps.repo.consumeOAuthState(tokenHash, now(deps))
   if (!state) return { kind: 'invalid' }
-  const base = { userId: state.userId, triggerMessageId: state.triggerMessageId, requested: state.capabilities as Capability[] }
+  const requested = state.capabilities as Capability[]
+  // Links from before `needed` existed asked for exactly what they needed.
+  const needed = state.needed.length ? (state.needed as Capability[]) : requested
+  const base = { userId: state.userId, triggerMessageId: state.triggerMessageId, requested, needed }
   if (params.error || !params.code) return { kind: 'denied', ...base }
 
   try {
@@ -68,7 +76,7 @@ export async function completeAuthorization(
       accessTokenExpiresAt: new Date(now(deps).getTime() + tokens.expires_in * 1000),
     })
     const granted = grantedCapabilities(scopes)
-    return { kind: 'connected', ...base, missing: base.requested.filter((c) => !granted.includes(c)), account }
+    return { kind: 'connected', ...base, granted, missing: needed.filter((c) => !granted.includes(c)), account }
   } catch (err) {
     const reason = err instanceof GoogleOAuthError ? err.code : 'token exchange failed'
     deps.logger.error({ err, userId: state.userId }, 'google authorization failed')

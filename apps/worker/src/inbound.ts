@@ -43,8 +43,8 @@ export type InboundRepo = Pick<
 /** Google (or other) connectors for one user. Absent when no connector is configured. */
 export interface Connectors {
   forUser(userId: string): { credentials: CredentialProvider; connections: ConnectionManager }
-  /** One-time link asking for exactly these capabilities. */
-  connectLink(input: { userId: string; capabilities: Capability[]; triggerMessageId: string | null }): Promise<{ url: string }>
+  /** One-time link. Google offers every capability; `needed` is what this request can't do without. */
+  connectLink(input: { userId: string; needed: Capability[]; triggerMessageId: string | null }): Promise<{ url: string }>
 }
 
 export interface InboundDeps {
@@ -104,8 +104,10 @@ export function connectLinkMessage(capabilities: Capability[], url: string): { t
   const historyText = [
     `🔐 To let me ${labels(capabilities)}, connect your Google account with the button below.`,
     '',
-    'It works once and expires in 15 minutes. I only get the access listed on the Google screen, ' +
-      'and you can remove it any time: just say "disconnect Google".',
+    "Google will list everything I can help with (calendar, email, Drive) so I don't have to ask again. " +
+      'Untick anything you don\'t want; I only get what you leave ticked.',
+    '',
+    'The link works once and expires in 15 minutes. You can remove access any time: just say "disconnect Google".',
   ].join('\n')
   return { text: `${historyText}\n\nOr open this link:\n${url}`, historyText, label: 'Connect Google' }
 }
@@ -149,7 +151,7 @@ export function createInboundHandler(deps: InboundDeps) {
   async function sendConnectLink(user: User, capabilities: Capability[], triggerMessageId: string | null = null) {
     if (!deps.connectors) return
     // The system writes the link, never the model.
-    const { url } = await deps.connectors.connectLink({ userId: user.id, capabilities, triggerMessageId })
+    const { url } = await deps.connectors.connectLink({ userId: user.id, needed: capabilities, triggerMessageId })
     const message = connectLinkMessage(capabilities, url)
     try {
       const ids = await channelFor(user.channel).sendLink(user.externalId, { text: message.text, label: message.label, url })
@@ -353,8 +355,8 @@ export function createInboundHandler(deps: InboundDeps) {
       await reply(user, 'Something went wrong while connecting your Google account. Please ask me again to get a new link.')
       return
     }
-    const granted = e.requested.filter((c) => !e.missing.includes(c))
-    const lines = [`✅ Connected ${products(granted.length ? granted : e.requested)}${e.account ? ` (${e.account})` : ''}.`]
+    const lines = [`✅ Connected ${products(e.granted.length ? e.granted : e.needed)}${e.account ? ` (${e.account})` : ''}.`]
+    // Only what this request needed matters here; optional permissions left unticked are fine.
     if (e.missing.length) lines.push(`You didn't allow me to ${labels(e.missing)}, so I can't do that part.`)
     await reply(user, lines.join('\n'))
 

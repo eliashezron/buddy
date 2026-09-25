@@ -276,7 +276,7 @@ export function createRepo(db: Db) {
       return rows.length > 0
     },
 
-    async createOAuthState(input: Omit<OAuthState, 'createdAt' | 'usedAt'>) {
+    async createOAuthState(input: Omit<OAuthState, 'createdAt' | 'usedAt' | 'needed'> & { needed?: string[] }) {
       await db.insert(oauthStates).values(input)
     },
 
