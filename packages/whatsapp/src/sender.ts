@@ -76,7 +76,7 @@ export function createWhatsAppChannel({
           if (!(err instanceof GraphApiError && err.permanent)) throw err
         }
       }
-      return channel.sendText(to, `${link.text}\n${link.url}`)
+      return channel.sendText(to, link.text.includes(link.url) ? link.text : `${link.text}\n${link.url}`)
     },
     // Reply buttons can't be removed on WhatsApp. A later tap on a decided card is a no-op.
     async closeApproval() {},

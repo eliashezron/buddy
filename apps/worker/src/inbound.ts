@@ -94,17 +94,19 @@ const labels = (caps: Capability[]) => {
 }
 const products = (caps: Capability[]) => [...new Set(caps.map((c) => CAPABILITIES[c].product))].join(' and ')
 
-/** The connect message. The URL goes on a button, not in the text (see `Channel.sendLink`). */
-export function connectLinkMessage(capabilities: Capability[]): { text: string; label: string } {
-  return {
-    text: [
-      `🔐 To let me ${labels(capabilities)}, connect your Google account with the button below.`,
-      '',
-      'It works once and expires in 15 minutes. I only get the access listed on the Google screen, ' +
-        'and you can remove it any time: just say "disconnect Google".',
-    ].join('\n'),
-    label: 'Connect Google',
-  }
+/**
+ * The connect message: a button that opens the link, with the link also shown as text
+ * for anyone who prefers to copy it. `historyText` leaves the one-time URL out, so it
+ * is never stored and never reaches the model.
+ */
+export function connectLinkMessage(capabilities: Capability[], url: string): { text: string; historyText: string; label: string } {
+  const historyText = [
+    `🔐 To let me ${labels(capabilities)}, connect your Google account with the button below.`,
+    '',
+    'It works once and expires in 15 minutes. I only get the access listed on the Google screen, ' +
+      'and you can remove it any time: just say "disconnect Google".',
+  ].join('\n')
+  return { text: `${historyText}\n\nOr open this link:\n${url}`, historyText, label: 'Connect Google' }
 }
 
 /** What we store as the body. Content only; never logged. */
@@ -147,13 +149,13 @@ export function createInboundHandler(deps: InboundDeps) {
     if (!deps.connectors) return
     // The system writes the link, never the model.
     const { url } = await deps.connectors.connectLink({ userId: user.id, capabilities, triggerMessageId })
-    const message = connectLinkMessage(capabilities)
+    const message = connectLinkMessage(capabilities, url)
     try {
-      const ids = await channelFor(user.channel).sendLink(user.externalId, { ...message, url })
+      const ids = await channelFor(user.channel).sendLink(user.externalId, { text: message.text, label: message.label, url })
       // History keeps the text only: the one-time URL never reaches the model's context.
       const sentAt = new Date()
       for (const id of ids) {
-        await repo.insertOutboundMessage({ userId: user.id, channel: user.channel, externalMessageId: id, body: message.text, sentAt })
+        await repo.insertOutboundMessage({ userId: user.id, channel: user.channel, externalMessageId: id, body: message.historyText, sentAt })
       }
     } catch (err) {
       if (err instanceof ChannelSendError && err.permanent) {
