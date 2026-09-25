@@ -66,7 +66,7 @@ export function createTelegramChannel({ client, botId, onTypingError = () => {} 
       } catch (err) {
         // Telegram rejects some button URLs (localhost, for one) with a 400. The link still works as text.
         if (!(err instanceof TelegramApiError && err.errorCode === 400)) throw err
-        return channel.sendText(chatId, `${link.text}\n${link.url}`)
+        return channel.sendText(chatId, link.text.includes(link.url) ? link.text : `${link.text}\n${link.url}`)
       }
     },
     async closeApproval(message, outcome) {

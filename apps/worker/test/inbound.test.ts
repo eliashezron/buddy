@@ -351,9 +351,9 @@ describe('inbound handler: connectors', () => {
     expect(texts).toHaveLength(2)
     expect(texts[1]).toContain('see your calendar events')
     expect(texts[1]).toContain('expires in 15 minutes')
-    // The link is a button that opens the browser, not text to copy.
-    expect(texts[1]).not.toContain('https://')
+    // A button that opens the browser, with the link also shown for copying.
     expect(t.tg.sent[1]!.buttons).toEqual([[{ text: 'Connect Google', url: 'https://api.example/oauth/google/start?s=TOKEN' }]])
+    expect(texts[1]).toContain('Or open this link:\nhttps://api.example/oauth/google/start?s=TOKEN')
     // The one-time URL is never stored as history, so the model never sees it.
     expect(t.messages.some((m) => m.body?.includes('s=TOKEN'))).toBe(false)
   })
@@ -368,8 +368,10 @@ describe('inbound handler: connectors', () => {
       return send(chatId, text, opts)
     }
     for (const e of fixtureEvents('telegram-text')) await t.handle(e)
-    expect(t.tg.sent.at(-1)!.text).toContain('https://api.example/oauth/google/start?s=TOKEN')
-    expect(t.tg.sent.at(-1)!.buttons).toBeUndefined()
+    const fallback = t.tg.sent.at(-1)!
+    expect(fallback.buttons).toBeUndefined()
+    // The link appears once, not twice.
+    expect(fallback.text.split('https://api.example/oauth/google/start?s=TOKEN')).toHaveLength(2)
   })
 
   it('after connecting: confirms, then re-runs the original request', async () => {

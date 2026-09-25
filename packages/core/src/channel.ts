@@ -64,14 +64,15 @@ export interface Channel {
   /** After a button press: stop the client's spinner and close the card, where the platform allows it. */
   closeApproval(message: InboundMessage, outcome: string): Promise<void>
   /**
-   * Sends `text` with a button that opens `url` in the browser. Falls back to the text
-   * followed by the bare URL if the platform rejects the button (e.g. a localhost URL).
+   * Sends `text` with a button that opens `url` in the browser. If the platform rejects
+   * the button (e.g. a localhost URL), sends the text alone, adding the URL unless the
+   * text already shows it.
    */
   sendLink(to: string, link: LinkButton): Promise<string[]>
 }
 
 export interface LinkButton {
-  /** Markdown shown above the button. Should not contain the URL. */
+  /** Markdown shown above the button. May include the URL for users who prefer to copy it. */
   text: string
   url: string
   /** Button label, max 20 characters (WhatsApp's limit). */
