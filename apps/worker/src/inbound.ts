@@ -82,7 +82,8 @@ export function welcomeText(name?: string): string {
     `Hi${name ? ` ${name}` : ''}! I'm your task assistant.`,
     '',
     'Ask me to look things up (prices, opening hours, news, places, how-tos) or send me a link to summarise. ' +
-      "I can also check your calendar and email: I'll ask for access the first time you need it. Notion is coming soon.",
+      "I can also check your calendar and email, find and read your Google Docs, Sheets and Slides, and create new ones: " +
+      "I'll ask for access the first time you need it. Notion is coming soon.",
     '',
     'I only see the messages you send me here.',
   ].join('\n')

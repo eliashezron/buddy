@@ -33,9 +33,19 @@ Later: "book focus time Friday 2pm"
 | `delete_calendar_event` | low_write, undoable 10 min | calendar write. Own events only, no notifications. Events with other guests are refused (deleting them notifies people). Undo restores the same event. |
 | `gmail_search`, `gmail_read` | read | Gmail read (`gmail.readonly`) |
 | `gmail_create_draft` | low_write, undoable 10 min | Gmail compose (`gmail.compose`). Saves a draft (new or a threaded reply); never sends. Undo deletes the draft. |
+| `drive_search`, `drive_read` | read | Drive read (`drive.readonly`). Finds files by name or content; reads Docs and Slides as text and Sheets as rows (5 tabs × 200 rows). Content is marked untrusted. |
+| `create_document` | low_write, undoable 10 min | Drive file (`drive.file`). Markdown uploaded as HTML; Drive converts it to a formatted Doc. Private: never shared. Undo moves it to the trash. |
+| `create_spreadsheet` | low_write, undoable 10 min | Drive file. Tabs, bold frozen header, real numbers and formulas. Formulas that fetch from the web (IMPORTXML, IMAGE, …) are stored as text so a sheet built from untrusted content can't leak its data. Leading-zero numbers (phone numbers) stay text. |
+| `create_presentation` | low_write, undoable 10 min | Drive file. Title slide plus title-and-bullets slides; a half-built deck is trashed if filling it fails. |
 | `gmail_send_email` | **outbound**, needs approval | Gmail compose (+ read to thread a reply). Sends only after the user presses Send on the card. |
 | `manage_connections` | low_write | none. Lists access or disconnects (revokes at Google). |
 | `undo_last_action` | low_write | none. Reverses the last undoable change within 10 minutes. |
+
+`drive.file` is Google's narrowest Drive scope: the app can only see and change files it
+created. Editing the user's other files, and sharing any file (which emails people, so it
+would be `outbound`), are not supported yet. `drive.readonly` is restricted, like
+`gmail.readonly`. **Enable the Google Drive, Sheets and Slides APIs** in the Cloud project
+(APIs & Services → Library) or these tools get 403s.
 
 Google has no drafts-only scope: `gmail.compose` also permits sending, and Google's consent
 screen says so ("manage drafts and send emails"). Sending is gated by the approval flow
@@ -130,6 +140,11 @@ points at `localhost:3000`, which a phone can't reach.
 | "Disconnect Google" | Access revoked (see https://myaccount.google.com/permissions). The next calendar question asks again. |
 | Open a link twice, or after 15 min | "This link has expired / already been used". |
 | Tap Cancel on Google's screen | "No problem, I haven't connected anything." |
+| "Find my <something> doc" | A link asking for Drive read access; then matching files. |
+| "Summarise <a Docs link>" | The doc's contents, summarised. |
+| "Make a Google Doc with notes: …" | A link for Drive file access; then a formatted Doc (headings, bullets) you own, not shared. "Undo that" trashes it. |
+| "Make a spreadsheet tracking …" | A Sheet with a bold frozen header and real numbers. |
+| "Make a 4-slide deck about …" | A title slide plus bulleted slides. |
 | "Email <your other address> that the test worked" | One line saying it's ready, then a card with the full email and Send / Cancel. Nothing in Sent yet. |
 | Tap **Send** | "✅ Done: Email to …". It's in Gmail Sent. The buttons disappear (Telegram). |
 | Ask again, tap **Cancel** | "Cancelled. Nothing was sent." |
