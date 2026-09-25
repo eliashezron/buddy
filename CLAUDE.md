@@ -96,6 +96,9 @@ defineTool({
                               // outbound/money it IS the approval card: show everything sent
   title: (input) => string,   // optional: one line for buttons and confirmations
   requires: (input) => Capability[], // optional: checked before asking for approval
+  describe: async (input, ctx) => ({ preview, title } | { error }), // optional, outbound:
+                              // build the card from the account (event, file), or refuse
+  approveLabel: 'Send invite', // optional: the approve button's text
   execute: async (input, ctx) => result,
 })
 ```

@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createLogger, NeedsConnectionError, noServices, type ToolContext } from '@wa/core'
 import {
   buildRawEmail,
+  cancelCalendarEvent,
+  sendCalendarInvite,
+  shareFile,
   cellValue,
   createDocument,
   createPresentation,
@@ -331,6 +334,76 @@ describe('Google Drive: create Docs, Sheets and Slides', () => {
 
   it('creating needs only drive.file-level access', async () => {
     await expect(createDocument.execute({ title: 'x', content: 'y' }, ctx(false))).rejects.toMatchObject({ capabilities: ['drive.create'] })
+  })
+})
+
+describe('outbound: invites, cancelling, sharing (cards from describe)', () => {
+  const invite = { title: 'Q3 review', start: '2026-09-28T15:00:00+03:00', durationMins: 30, attendees: ['kato@example.com', 'amina@example.com'], addMeetLink: true }
+
+  it('send_calendar_invite: the card shows local time, guests and the Meet link; execute notifies everyone', async () => {
+    expect(sendCalendarInvite.risk).toBe('outbound')
+    const card = await sendCalendarInvite.describe!(invite, ctx())
+    expect(card).toEqual({
+      preview: '📅 **Send this invitation?**\n**Q3 review**\nMon 28 Sept, 15:00–15:30 (Africa/Kampala)\nWith a Google Meet link\nGuests (Google will email them): kato@example.com, amina@example.com',
+      title: 'Invite 2 to "Q3 review"',
+    })
+    const calls = stubGoogle(() => ({ status: 200, json: { id: 'ev9', hangoutLink: 'https://meet.google.com/abc-defg-hij' } }))
+    const out = await sendCalendarInvite.execute(invite, ctx())
+    expect(out).toMatchObject({ ok: true, eventId: 'ev9', invited: invite.attendees, meetLink: 'https://meet.google.com/abc-defg-hij' })
+    expect(calls[0]!.url.searchParams.get('sendUpdates')).toBe('all')
+    const body = JSON.parse(String(calls[0]!.init.body))
+    expect(body.attendees).toEqual([{ email: 'kato@example.com' }, { email: 'amina@example.com' }])
+    expect(body.conferenceData.createRequest.conferenceSolutionKey).toEqual({ type: 'hangoutsMeet' })
+  })
+
+  it('send_calendar_invite refuses a start without an offset before asking', async () => {
+    expect(await sendCalendarInvite.describe!({ ...invite, start: '2026-09-28T15:00' }, ctx())).toEqual({ error: expect.stringMatching(/offset/) })
+  })
+
+  it('cancel_calendar_event: the card names the meeting and who will be told; only the organiser can cancel', async () => {
+    const event = {
+      id: 'ev1',
+      summary: 'Supplier call',
+      start: { dateTime: '2026-09-28T12:00:00Z' },
+      end: { dateTime: '2026-09-28T12:30:00Z' },
+      organizer: { self: true },
+      attendees: [{ self: true }, { email: 'kato@example.com' }, { email: 'room@resource.calendar.google.com', resource: true }],
+    }
+    stubGoogle(() => ({ status: 200, json: event }))
+    expect(await cancelCalendarEvent.describe!({ eventId: 'ev1' }, ctx())).toEqual({
+      preview: '🗓️ **Cancel this meeting for everyone?**\n**Supplier call**\nMon 28 Sept, 15:00–15:30\nGoogle will email a cancellation to: kato@example.com',
+      title: 'Cancel "Supplier call"',
+    })
+    stubGoogle(() => ({ status: 200, json: { ...event, organizer: { self: false, displayName: 'Amina' } } }))
+    expect(await cancelCalendarEvent.describe!({ eventId: 'ev1' }, ctx())).toEqual({ error: expect.stringMatching(/^Amina organised this meeting/) })
+    stubGoogle(() => ({ status: 200, json: { ...event, attendees: [{ self: true }] } }))
+    expect(await cancelCalendarEvent.describe!({ eventId: 'ev1' }, ctx())).toEqual({ error: expect.stringMatching(/delete_calendar_event/) })
+
+    const calls = stubGoogle(() => ({ status: 204 }))
+    await cancelCalendarEvent.execute({ eventId: 'ev1' }, ctx())
+    expect(calls[0]!.init.method).toBe('DELETE')
+    expect(calls[0]!.url.searchParams.get('sendUpdates')).toBe('all')
+  })
+
+  it('share_file: the card names the file from Drive; files the app did not create are refused before asking', async () => {
+    const share = { file: 'https://docs.google.com/document/d/1AbCdEfGhIjKlMnOp/edit', emails: ['kato@example.com'], role: 'writer' as const, message: 'Draft for Monday' }
+    stubGoogle(() => ({ status: 200, json: { id: '1AbCdEfGhIjKlMnOp', name: 'Launch plan', mimeType: 'application/vnd.google-apps.document' } }))
+    expect(await shareFile.describe!(share, ctx())).toEqual({
+      preview: '🔗 **Share this Google Doc?**\n**Launch plan**\nWith: kato@example.com\nThey can: edit\nGoogle will email each of them a link.\n\nNote: Draft for Monday',
+      title: 'Share "Launch plan" (can edit)',
+    })
+    stubGoogle(() => ({ status: 404, json: { error: { message: 'File not found' } } }))
+    expect(await shareFile.describe!(share, ctx())).toEqual({ error: expect.stringMatching(/only share files I created/) })
+
+    const calls = stubGoogle(() => ({ status: 200, json: { id: 'perm1' } }))
+    expect(await shareFile.execute({ ...share, emails: ['kato@example.com', 'amina@example.com'] }, ctx())).toMatchObject({ ok: true, sharedWith: ['kato@example.com', 'amina@example.com'] })
+    expect(calls.map((c) => JSON.parse(String(c.init.body)))).toEqual([
+      { type: 'user', role: 'writer', emailAddress: 'kato@example.com' },
+      { type: 'user', role: 'writer', emailAddress: 'amina@example.com' },
+    ])
+    expect(calls[0]!.url.pathname).toBe('/drive/v3/files/1AbCdEfGhIjKlMnOp/permissions')
+    expect(calls[0]!.url.searchParams.get('sendNotificationEmail')).toBe('true')
+    expect(calls[0]!.url.searchParams.get('emailMessage')).toBe('Draft for Monday')
   })
 })
 
