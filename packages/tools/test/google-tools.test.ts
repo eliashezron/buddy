@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createLogger, NeedsConnectionError, noServices, type ToolContext } from '@wa/core'
 import {
   buildRawEmail,
+  editDocument,
+  editSpreadsheet,
+  userEnteredCell,
   cancelCalendarEvent,
   sendCalendarInvite,
   shareFile,
@@ -404,6 +407,100 @@ describe('outbound: invites, cancelling, sharing (cards from describe)', () => {
     expect(calls[0]!.url.pathname).toBe('/drive/v3/files/1AbCdEfGhIjKlMnOp/permissions')
     expect(calls[0]!.url.searchParams.get('sendNotificationEmail')).toBe('true')
     expect(calls[0]!.url.searchParams.get('emailMessage')).toBe('Draft for Monday')
+  })
+})
+
+describe('editing existing Docs and Sheets (every edit undoable)', () => {
+  const DOC = '1ExistingDocId000000000'
+  const doc = (text: string, revisionId = 'rev1') => ({
+    documentId: DOC,
+    title: 'Team notes',
+    revisionId,
+    body: { content: [{ endIndex: 1 }, { endIndex: text.length + 1, paragraph: { elements: [{ textRun: { content: text } }] } }] },
+  })
+
+  it('appends under a heading at the end, pinned to the revision it read; undo deletes exactly that range', async () => {
+    const calls = stubGoogle((url) =>
+      url.pathname.endsWith(':batchUpdate') ? { status: 200, json: { replies: [], writeControl: { requiredRevisionId: 'rev2' } } } : { status: 200, json: doc('Intro\n') },
+    )
+    const out = await editDocument.execute({ file: DOC, append: { heading: 'Decisions', text: 'Launch on 5 Oct' } }, ctx())
+    // Body ends at index 7 ('Intro\n' + 1): insert at 6, before the final newline.
+    expect(out).toMatchObject({ ok: true, change: 'appended', undo: { kind: 'delete', start: 6, end: 6 + '\nDecisions\nLaunch on 5 Oct'.length, revisionId: 'rev2' } })
+    const body = JSON.parse(String(calls[1]!.init.body))
+    expect(body.writeControl).toEqual({ requiredRevisionId: 'rev1' })
+    expect(body.requests[0]).toEqual({ insertText: { location: { index: 6 }, text: '\nDecisions\nLaunch on 5 Oct' } })
+    expect(body.requests[1].updateParagraphStyle).toMatchObject({ range: { startIndex: 7, endIndex: 17 }, paragraphStyle: { namedStyleType: 'HEADING_2' } })
+
+    await editDocument.undo!(out, ctx())
+    const undo = JSON.parse(String(calls[2]!.init.body))
+    expect(undo).toEqual({ requests: [{ deleteContentRange: { range: { startIndex: 6, endIndex: 32 } } }], writeControl: { requiredRevisionId: 'rev2' } })
+  })
+
+  it('replaces a phrase everywhere and undo swaps it back; refuses a replacement it could not reverse', async () => {
+    let calls = stubGoogle((url) =>
+      url.pathname.endsWith(':batchUpdate')
+        ? { status: 200, json: { replies: [{ replaceAllText: { occurrencesChanged: 2 } }], writeControl: { requiredRevisionId: 'rev2' } } }
+        : { status: 200, json: doc('Launch Friday. Friday works.\n') },
+    )
+    const out = await editDocument.execute({ file: DOC, replace: { find: 'Friday', with: 'Monday' } }, ctx())
+    expect(out).toMatchObject({ ok: true, change: 'replaced', occurrences: 2, undo: { kind: 'swap', from: 'Monday', to: 'Friday' } })
+    await editDocument.undo!(out, ctx())
+    expect(JSON.parse(String(calls[2]!.init.body)).requests[0]).toEqual({ replaceAllText: { containsText: { text: 'Monday', matchCase: true }, replaceText: 'Friday' } })
+
+    // "Monday" already in the doc: swapping back would also change the old Monday.
+    calls = stubGoogle(() => ({ status: 200, json: doc('Friday or Monday?\n') }))
+    expect(await editDocument.execute({ file: DOC, replace: { find: 'Friday', with: 'Monday' } }, ctx())).toMatchObject({ ok: false, error: expect.stringMatching(/couldn't be undone cleanly/) })
+    expect(calls.some((c) => c.url.pathname.endsWith(':batchUpdate'))).toBe(false)
+    stubGoogle(() => ({ status: 200, json: doc('Nothing here\n') }))
+    expect(await editDocument.execute({ file: DOC, replace: { find: 'Friday', with: 'Monday' } }, ctx())).toMatchObject({ ok: false, error: expect.stringMatching(/does not appear/) })
+    expect(editDocument.input.safeParse({ file: DOC, replace: { find: 'x', with: '' } }).success).toBe(false)
+  })
+
+  it('appends rows below the data (no inserted rows), guarding cells; undo clears them', async () => {
+    const calls = stubGoogle((url) => {
+      if (url.pathname.endsWith(':append')) return { status: 200, json: { updates: { updatedRange: "'Sept'!A5:C5", updatedRows: 1 } } }
+      if (url.pathname.endsWith(':clear')) return { status: 200, json: {} }
+      return { status: 200, json: { properties: { title: 'Budget' }, sheets: [{ properties: { title: 'Sept' } }] } }
+    })
+    const out = await editSpreadsheet.execute({ file: 'https://docs.google.com/spreadsheets/d/1SheetId0000000000/edit', appendRows: [['Water', '45,000', '0770123456']] }, ctx())
+    expect(out).toMatchObject({ ok: true, change: 'appended', tab: 'Sept', range: "'Sept'!A5:C5" })
+    expect(calls[1]!.url.searchParams.get('insertDataOption')).toBe('OVERWRITE')
+    expect(calls[1]!.url.searchParams.get('valueInputOption')).toBe('USER_ENTERED')
+    expect(JSON.parse(String(calls[1]!.init.body))).toEqual({ values: [['Water', '45,000', "'0770123456"]] })
+    await editSpreadsheet.undo!(out, ctx())
+    expect(decodeURIComponent(calls[2]!.url.pathname)).toBe("/v4/spreadsheets/1SheetId0000000000/values/'Sept'!A5:C5:clear")
+  })
+
+  it('updates cells after saving what was there (formulas as formulas); undo writes it back', async () => {
+    const calls = stubGoogle((url, init) => {
+      if (init.method === 'PUT') return { status: 200, json: { updatedRange: "'Sept'!B2:C3", updatedCells: 4 } }
+      if (url.pathname.includes('/values/')) return { status: 200, json: { range: "'Sept'!B2:C3", values: [[900000, '=SUM(B1:B1)'], ['0770123456']] } }
+      return { status: 200, json: { properties: { title: 'Budget' }, sheets: [{ properties: { title: 'Sept' } }] } }
+    })
+    const out = await editSpreadsheet.execute({ file: '1SheetId0000000000', update: { range: 'B2:C3', values: [['950000', '=IMPORTXML("https://x","//a")'], ['1', '2']] } }, ctx())
+    expect(out).toMatchObject({ ok: true, change: 'updated', previous: [[900000, '=SUM(B1:B1)'], ['0770123456', '']] })
+    expect(calls[1]!.url.searchParams.get('valueRenderOption')).toBe('FORMULA')
+    expect(JSON.parse(String(calls[2]!.init.body))).toEqual({ values: [['950000', '\'=IMPORTXML("https://x","//a")'], ['1', '2']] })
+    await editSpreadsheet.undo!(out, ctx())
+    expect(JSON.parse(String(calls[3]!.init.body))).toEqual({ values: [[900000, '=SUM(B1:B1)'], ["'0770123456", '']] })
+  })
+
+  it('refuses unknown tabs and bad ranges before writing anything, and asks for Sheets access', async () => {
+    const calls = stubGoogle(() => ({ status: 200, json: { properties: { title: 'Budget' }, sheets: [{ properties: { title: 'Sept' } }] } }))
+    expect(await editSpreadsheet.execute({ file: '1SheetId0000000000', tab: 'Oct', appendRows: [['x']] }, ctx())).toMatchObject({ ok: false, error: 'No tab named "Oct". Tabs: Sept.' })
+    expect(await editSpreadsheet.execute({ file: '1SheetId0000000000', update: { range: 'Sheet2!A1', values: [['x']] } }, ctx())).toMatchObject({ ok: false })
+    expect(calls.every((c) => !c.init.method || c.init.method === 'GET')).toBe(true)
+    await expect(editSpreadsheet.execute({ file: '1SheetId0000000000', appendRows: [['x']] }, ctx(false))).rejects.toMatchObject({ capabilities: ['sheets.edit'] })
+    await expect(editDocument.execute({ file: DOC, append: { text: 'x' } }, ctx(false))).rejects.toMatchObject({ capabilities: ['docs.edit'] })
+  })
+
+  it('USER_ENTERED guard: network formulas and digit strings that would change stay text', () => {
+    expect(userEnteredCell('=IMAGE("https://x")')).toBe('\'=IMAGE("https://x")')
+    expect(userEnteredCell('0770123456')).toBe("'0770123456")
+    expect(userEnteredCell('4111111111111111')).toBe("'4111111111111111")
+    expect(userEnteredCell('45,000')).toBe('45,000')
+    expect(userEnteredCell('=SUM(A1:A3)')).toBe('=SUM(A1:A3)')
+    expect(userEnteredCell('Rent')).toBe('Rent')
   })
 })
 

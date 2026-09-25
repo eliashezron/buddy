@@ -33,6 +33,9 @@ const logger = createLogger({ name: 'evals', level: 'silent' })
 const args = process.argv.slice(2)
 const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1]?.split(',')) : null
 
+/** Thu 24 Sep 2026, 09:00 in Kampala. */
+const EVAL_NOW = new Date('2026-09-24T06:00:00Z')
+
 const STUB_RESULTS: Record<string, unknown> = {
   web_search: { ok: true, query: '', summary: 'Stubbed findings for evaluation.', sources: [{ title: 'Example', url: 'https://example.com' }] },
   fetch_page: {
@@ -99,6 +102,8 @@ const STUB_RESULTS: Record<string, unknown> = {
   create_document: { ok: true, fileId: 'doc1', title: 'Doc', link: 'https://docs.google.com/document/d/doc1/edit', sharedWithAnyone: false, undoableForMinutes: 10 },
   create_spreadsheet: { ok: true, fileId: 'sh1', title: 'Sheet', tabs: ['Sheet1'], link: 'https://docs.google.com/spreadsheets/d/sh1/edit', sharedWithAnyone: false, undoableForMinutes: 10 },
   create_presentation: { ok: true, fileId: 'p1', title: 'Deck', slideCount: 5, link: 'https://docs.google.com/presentation/d/p1/edit', sharedWithAnyone: false, undoableForMinutes: 10 },
+  edit_document: { ok: true, documentId: '1TeamNotesDocId00000000', title: 'Team notes', change: 'appended', characters: 40, link: 'https://docs.google.com/document/d/1TeamNotesDocId00000000/edit', undoableForMinutes: 10 },
+  edit_spreadsheet: { ok: true, spreadsheetId: '1BudgetSheetId0000000000', title: 'Household budget 2026', tab: 'Sept', change: 'appended', rows: 1, range: "'Sept'!A9:C9", link: 'https://docs.google.com/spreadsheets/d/1BudgetSheetId0000000000/edit', undoableForMinutes: 10 },
   manage_connections: { ok: true, connections: [] },
   undo_last_action: { ok: true, undone: 'Removed "Lunch with Kato" from your calendar' },
 }
@@ -115,6 +120,8 @@ const GOOGLE_CAPS: Record<string, Capability> = {
   create_document: 'drive.create',
   create_spreadsheet: 'drive.create',
   create_presentation: 'drive.create',
+  edit_document: 'docs.edit',
+  edit_spreadsheet: 'sheets.edit',
 }
 
 function stubbed(tool: AnyTool, calls: string[], c: EvalCase): AnyTool {
@@ -177,6 +184,9 @@ async function runCase(c: EvalCase): Promise<Outcome> {
     actions,
     logger,
     runId: `eval_${c.id}`,
+    // Fixed clock matching the stub data (Fri 25 Sep is "tomorrow"), so results don't depend on
+    // when the suite runs: a stub meeting at 15:00 today would otherwise read as already over.
+    now: EVAL_NOW,
     user: { id: 'eval', timezone: 'Africa/Kampala', name: 'Elias' },
     channel: c.channel ?? 'whatsapp',
     // Connected unless the case says otherwise, so outbound tools reach the approval step.
