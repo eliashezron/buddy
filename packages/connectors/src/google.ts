@@ -30,6 +30,9 @@ export const CAPABILITY_SCOPE: Record<Capability, string> = {
   'drive.create': DRIVE_FILE,
 }
 
+/** Every Google capability, offered together on the consent screen. */
+export const GOOGLE_CAPABILITIES = Object.keys(CAPABILITY_SCOPE) as Capability[]
+
 /** Scopes that also satisfy a capability (calendar write access includes reading events). */
 const SATISFIED_BY: Record<Capability, string[]> = {
   'calendar.read': [CALENDAR_READ, CALENDAR_WRITE],

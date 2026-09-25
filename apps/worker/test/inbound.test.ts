@@ -332,7 +332,7 @@ describe('inbound handler: connectors', () => {
   }
 
   function fakeConnectors() {
-    const links: { userId: string; capabilities: Capability[]; triggerMessageId: string | null }[] = []
+    const links: { userId: string; needed: Capability[]; triggerMessageId: string | null }[] = []
     const connectors: Connectors = {
       forUser: () => ({ credentials: { accessToken: async () => 'tok' }, connections: { list: async () => [], disconnect: async () => false } }),
       connectLink: async (input) => (links.push(input), { url: 'https://api.example/oauth/google/start?s=TOKEN' }),
@@ -346,7 +346,7 @@ describe('inbound handler: connectors', () => {
     const t = setup(async () => script.shift()!, { connectors, tools: [calendarTool(() => false)] })
     for (const e of fixtureEvents('telegram-text')) await t.handle(e)
 
-    expect(links).toEqual([{ userId: expect.any(String), capabilities: ['calendar.read'], triggerMessageId: expect.any(String) }])
+    expect(links).toEqual([{ userId: expect.any(String), needed: ['calendar.read'], triggerMessageId: expect.any(String) }])
     const texts = t.tg.sent.map((c) => c.text)
     expect(texts).toHaveLength(2)
     expect(texts[1]).toContain('see your calendar events')
@@ -396,13 +396,17 @@ describe('inbound handler: connectors', () => {
       outcome: 'connected',
       userId: user.id,
       triggerMessageId: trigger.id,
-      requested: ['calendar.read'],
+      // Everything was offered; the user left Calendar and Drive ticked and unticked Gmail.
+      requested: ['calendar.read', 'calendar.write', 'gmail.read', 'gmail.compose', 'drive.read', 'drive.create'],
+      needed: ['calendar.read'],
+      granted: ['calendar.read', 'calendar.write', 'drive.read'],
       missing: [],
       account: 'elias@example.com',
     }
     await t.handle(connected)
     const texts = t.tg.sent.map((c) => c.text)
-    expect(texts.at(-2)).toBe('✅ Connected Google Calendar (elias@example.com).')
+    // Optional permissions left unticked don't block the re-run and aren't nagged about.
+    expect(texts.at(-2)).toBe('✅ Connected Google Calendar and Google Drive (elias@example.com).')
     expect(texts.at(-1)).toBe('Tomorrow you have Standup at 9.')
   })
 
@@ -413,8 +417,16 @@ describe('inbound handler: connectors', () => {
     for (const e of fixtureEvents('telegram-text')) await t.handle(e)
     const user = [...t.users.values()][0]!
     const base = { kind: 'connection' as const, id: 'h', userId: user.id, triggerMessageId: null, account: null }
-    await t.handle({ ...base, outcome: 'denied', requested: ['gmail.read'], missing: [] })
-    await t.handle({ ...base, id: 'h2', outcome: 'connected', requested: ['calendar.read', 'gmail.read'], missing: ['gmail.read'] })
+    await t.handle({ ...base, outcome: 'denied', requested: ['gmail.read'], needed: ['gmail.read'], granted: [], missing: [] })
+    await t.handle({
+      ...base,
+      id: 'h2',
+      outcome: 'connected',
+      requested: ['calendar.read', 'gmail.read'],
+      needed: ['gmail.read'],
+      granted: ['calendar.read'],
+      missing: ['gmail.read'],
+    })
     const texts = t.tg.sent.map((c) => c.text)
     expect(texts).toContain("No problem, I haven&#39;t connected anything. You can ask again whenever you like.".replace('&#39;', "'"))
     expect(texts.at(-1)).toContain("You didn't allow me to read your email")

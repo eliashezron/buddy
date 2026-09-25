@@ -21,7 +21,13 @@ export interface ConnectionEvent {
   outcome: 'connected' | 'denied' | 'failed'
   userId: string
   triggerMessageId: string | null
+  /** Everything offered on Google's consent screen. */
   requested: Capability[]
+  /** What the triggering request needs. */
+  needed: Capability[]
+  /** What the user allowed (all their Google grants, including earlier ones). */
+  granted: Capability[]
+  /** Needed but not allowed: the request can't be re-run. */
   missing: Capability[]
   account: string | null
 }
