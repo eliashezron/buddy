@@ -57,11 +57,17 @@ export function createApprovals(deps: ApprovalDeps) {
   const { repo, logger } = deps
 
   /** After the agent's reply: one card per action awaiting approval. */
-  async function sendCards(user: User, pending: { actionId: string; tool: string; input: unknown }[], log: Logger) {
+  async function sendCards(
+    user: User,
+    pending: { actionId: string; tool: string; input: unknown; card?: { preview: string; title: string } | undefined }[],
+    log: Logger,
+  ) {
     for (const p of pending) {
       const tool = deps.toolsByName.get(p.tool)
       if (!tool) continue
-      const card = { actionId: p.actionId, preview: tool.preview(p.input), title: title(tool, p.input, tool.name), approveLabel: 'Send' }
+      // The loop's card (from `describe` when the tool has one); the input-based preview otherwise.
+      const text = p.card ?? { preview: tool.preview(p.input), title: title(tool, p.input, tool.name) }
+      const card = { actionId: p.actionId, ...text, approveLabel: tool.approveLabel ?? 'Send' }
       try {
         const ids = await deps.channelFor(user).sendApproval(user.externalId, card)
         const sentAt = deps.now()
@@ -108,7 +114,7 @@ export function createApprovals(deps: ApprovalDeps) {
     }
   }
 
-  async function execute(user: User, action: { id: string; tool: string; runId: string | null; input: unknown }, log: Logger) {
+  async function execute(user: User, action: { id: string; tool: string; runId: string | null; input: unknown; card?: unknown }, log: Logger) {
     const tool = deps.toolsByName.get(action.tool)
     // Defence in depth: the stored input was validated when the model proposed it; check again.
     const parsed = tool?.input.safeParse(action.input)
@@ -130,7 +136,9 @@ export function createApprovals(deps: ApprovalDeps) {
       const failed = typeof output === 'object' && output !== null && 'ok' in output && output.ok === false
       await repo.updateAction(action.id, { status: failed ? 'failed' : 'succeeded', result: output })
       if (failed) return deps.reply(user, APPROVAL_REPLIES.failed)
-      return deps.reply(user, `✅ Done: ${title(tool, parsed.data, 'sent')}.`)
+      // The title the user approved (the stored card), else the tool's own.
+      const approved = (action.card as { title?: string } | null | undefined)?.title
+      return deps.reply(user, `✅ Done: ${approved ?? title(tool, parsed.data, tool.name)}.`)
     } catch (err) {
       if (err instanceof NeedsConnectionError) {
         await repo.updateAction(action.id, { status: 'failed', error: `needs_connection:${err.problem}` })

@@ -646,6 +646,32 @@ describe('inbound handler: approvals (outbound actions)', () => {
     expect(t.tg.sent.at(-1)!.buttons).toEqual([[{ text: 'Connect Google', url: 'https://api.example/oauth/google/start?s=TOKEN' }]])
   })
 
+  it('shows the card built by describe (facts from the account) with the tool\'s own button label', async () => {
+    const executed: unknown[] = []
+    const cancel = defineTool({
+      name: 'cancel_calendar_event',
+      description: 'cancel',
+      risk: 'outbound',
+      input: z.object({ eventId: z.string() }),
+      approveLabel: 'Cancel meeting',
+      preview: ({ eventId }) => `Cancel ${eventId}?`,
+      describe: async () => ({ preview: '**Cancel "Supplier call"?**\nGoogle will email: kato@example.com', title: 'Cancel "Supplier call"' }),
+      execute: async (input) => (executed.push(input), { ok: true }),
+    })
+    const script = [toolUse('cancel_calendar_event', { eventId: 'ev1' }), reply('Ready for you to confirm.')]
+    const t = setup(async () => script.shift()!, { tools: [cancel] })
+    const [first] = fixtureEvents('telegram-text')
+    await t.handle(first!)
+    const action = t.actions.find((a) => a.tool === 'cancel_calendar_event')!
+    const card = t.tg.sent.at(-1)!
+    expect(card.text).toBe('<b>Cancel "Supplier call"?</b>\nGoogle will email: kato@example.com')
+    expect(card.buttons?.[0]?.[0]).toEqual({ text: '✅ Cancel meeting', data: `approve:${action.id}` })
+    expect(executed).toEqual([])
+    await t.handle(press(`approve:${action.id}`))
+    expect(executed).toEqual([{ eventId: 'ev1' }])
+    expect(t.tg.sent.at(-1)!.text).toContain('Done: Cancel')
+  })
+
   it('WhatsApp: reply buttons carry the same payloads, and a button reply approves', async () => {
     const { tool, executed, connectors } = sendTool()
     const script = [toolUse('gmail_send_email', EMAIL), reply('Ready to send.')]
