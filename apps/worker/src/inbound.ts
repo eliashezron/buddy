@@ -34,7 +34,7 @@ export type InboundRepo = Pick<
   | 'updateAction'
   | 'getUserById'
   | 'getMessageById'
-  | 'latestUndoableAction'
+  | 'latestUndoableActions'
 >
 
 /** Google (or other) connectors for one user. Absent when no connector is configured. */
@@ -145,21 +145,28 @@ export function createInboundHandler(deps: InboundDeps) {
     function undoFor(u: User): UndoService {
       return {
         async undoLatest() {
-          const action = await repo.latestUndoableAction(u.id, now())
-          if (!action) return { undone: false, reason: 'There is nothing I changed in the last 10 minutes to undo.' }
-          const tool = toolsByName.get(action.tool)
-          if (!tool?.undo) return { undone: false, reason: `The last change (${action.tool}) can't be undone automatically.` }
-          await tool.undo(action.result, {
-            userId: u.id,
-            runId: action.runId ?? 'undo',
-            actionId: action.id,
-            timezone: u.timezone,
-            now: now(),
-            logger: logger.child({ tool: tool.name, actionId: action.id, undo: true }),
-            services,
-          })
-          await repo.updateAction(action.id, { status: 'undone' })
-          return { undone: true, description: tool.preview(action.input) }
+          const batch = await repo.latestUndoableActions(u.id, now())
+          if (!batch.length) return { undone: false, reason: 'There is nothing I changed in the last 10 minutes to undo.' }
+          const cannot = batch.find((a) => !toolsByName.get(a.tool)?.undo)
+          if (cannot) return { undone: false, reason: `The last change (${cannot.tool}) can't be undone automatically.` }
+          // Newest first, so dependent changes unwind in reverse order. Each is marked as it
+          // goes, so a failure part-way leaves an accurate record of what was undone.
+          const done: string[] = []
+          for (const action of batch) {
+            const tool = toolsByName.get(action.tool)!
+            await tool.undo!(action.result, {
+              userId: u.id,
+              runId: action.runId ?? 'undo',
+              actionId: action.id,
+              timezone: u.timezone,
+              now: now(),
+              logger: logger.child({ tool: tool.name, actionId: action.id, undo: true }),
+              services,
+            })
+            await repo.updateAction(action.id, { status: 'undone' })
+            done.push(tool.preview(action.input))
+          }
+          return { undone: true, description: done.join('; ') }
         },
       }
     }
