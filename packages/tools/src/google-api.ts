@@ -15,12 +15,19 @@ export class GoogleApiError extends Error {
  * Calls a Google API as the current user. Missing or revoked access becomes
  * NeedsConnectionError, which the agent loop turns into a just-in-time connect link.
  */
+/** A non-JSON request body, e.g. a Drive multipart upload. */
+export interface RawBody {
+  contentType: string
+  data: string
+}
+
 export async function googleApi<S extends z.ZodType>(
   ctx: ToolContext,
   capabilities: Capability[],
   url: string,
-  opts: { method?: string; body?: unknown; schema: S },
+  opts: { method?: string; body?: unknown; raw?: RawBody; schema: S },
 ): Promise<z.infer<S>>
+export async function googleApi(ctx: ToolContext, capabilities: Capability[], url: string, opts: { text: true }): Promise<string>
 export async function googleApi(
   ctx: ToolContext,
   capabilities: Capability[],
@@ -31,17 +38,20 @@ export async function googleApi(
   ctx: ToolContext,
   capabilities: Capability[],
   url: string,
-  opts: { method?: string; body?: unknown; schema?: z.ZodType },
+  opts: { method?: string; body?: unknown; raw?: RawBody; schema?: z.ZodType; text?: boolean },
 ): Promise<unknown> {
   const token = await ctx.services.credentials.accessToken(capabilities)
   const timeout = AbortSignal.timeout(15_000)
+  const contentType = opts.raw?.contentType ?? (opts.body ? 'application/json' : undefined)
   const res = await fetch(url, {
     method: opts.method ?? 'GET',
-    headers: { Authorization: `Bearer ${token}`, ...(opts.body ? { 'Content-Type': 'application/json' } : {}) },
-    ...(opts.body ? { body: JSON.stringify(opts.body) } : {}),
+    headers: { Authorization: `Bearer ${token}`, ...(contentType ? { 'Content-Type': contentType } : {}) },
+    ...(opts.raw ? { body: opts.raw.data } : opts.body ? { body: JSON.stringify(opts.body) } : {}),
     signal: ctx.signal ? AbortSignal.any([ctx.signal, timeout]) : timeout,
   })
   if (res.status === 401) throw new NeedsConnectionError(capabilities, 'revoked')
+  // Exports (text/plain, text/csv) come back as text when they succeed; errors are always JSON.
+  if (opts.text && res.ok) return res.text()
   const json: unknown = res.status === 204 ? undefined : await res.json().catch(() => undefined)
   if (res.status === 403 && JSON.stringify(json ?? '').includes('insufficient')) {
     throw new NeedsConnectionError(capabilities, 'missing_permission')

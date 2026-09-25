@@ -15,6 +15,10 @@ const GMAIL_READ = 'https://www.googleapis.com/auth/gmail.readonly'
 // Google has no drafts-only scope: gmail.compose also allows sending. Sending stays gated
 // by the `outbound` policy (approval required), not by the scope.
 const GMAIL_COMPOSE = 'https://www.googleapis.com/auth/gmail.compose'
+const DRIVE_READ = 'https://www.googleapis.com/auth/drive.readonly'
+// Only files this app created (non-sensitive). Enough for creating Docs, Sheets and Slides
+// and for undoing that; editing the user's other files would need a broader scope.
+const DRIVE_FILE = 'https://www.googleapis.com/auth/drive.file'
 
 /** Narrowest scope that grants each capability (PRD: request the narrowest scopes possible). */
 export const CAPABILITY_SCOPE: Record<Capability, string> = {
@@ -22,6 +26,8 @@ export const CAPABILITY_SCOPE: Record<Capability, string> = {
   'calendar.write': CALENDAR_WRITE,
   'gmail.read': GMAIL_READ,
   'gmail.compose': GMAIL_COMPOSE,
+  'drive.read': DRIVE_READ,
+  'drive.create': DRIVE_FILE,
 }
 
 /** Scopes that also satisfy a capability (calendar write access includes reading events). */
@@ -30,6 +36,8 @@ const SATISFIED_BY: Record<Capability, string[]> = {
   'calendar.write': [CALENDAR_WRITE],
   'gmail.read': [GMAIL_READ],
   'gmail.compose': [GMAIL_COMPOSE],
+  'drive.read': [DRIVE_READ],
+  'drive.create': [DRIVE_FILE],
 }
 
 export function grants(scopes: readonly string[], capability: Capability): boolean {

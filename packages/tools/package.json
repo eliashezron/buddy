@@ -14,6 +14,14 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json"
   },
-  "dependencies": { "@anthropic-ai/sdk": "^0.128.0", "@wa/core": "workspace:*", "html-to-text": "^10.0.1", "zod": "^4.6.5" },
-  "devDependencies": { "@types/html-to-text": "^9.0.4" }
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
+    "@wa/core": "workspace:*",
+    "html-to-text": "^10.0.1",
+    "marked": "^16.4.2",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/html-to-text": "^9.0.4"
+  }
 }
