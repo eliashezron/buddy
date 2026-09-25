@@ -35,7 +35,7 @@ export type ActionStatus =
 /** Persistence for the `actions` table. No tool runs without a row. */
 export interface ActionLog {
   create(input: { tool: string; risk: Risk; status: ActionStatus; input: unknown; approvalExpiresAt?: Date }): Promise<string>
-  update(id: string, patch: { status: ActionStatus; result?: unknown; error?: string; undoExpiresAt?: Date }): Promise<void>
+  update(id: string, patch: { status: ActionStatus; result?: unknown; error?: string; undoExpiresAt?: Date; approvalExpiresAt?: Date }): Promise<void>
 }
 
 export interface HistoryTurn {
@@ -66,7 +66,7 @@ export interface ToolCallRecord {
   name: string
   input: unknown
   actionId?: string
-  outcome: 'succeeded' | 'failed' | 'blocked' | 'invalid' | 'needs_connection'
+  outcome: 'succeeded' | 'failed' | 'blocked' | 'invalid' | 'needs_connection' | 'awaiting_approval'
 }
 
 export interface RunAgentResult {
@@ -75,6 +75,8 @@ export interface RunAgentResult {
   toolCalls: ToolCallRecord[]
   /** Capabilities a tool needed but the user hasn't granted: the caller sends a connect link. */
   connectionRequests: Capability[]
+  /** `awaiting_approval` action ids: the caller sends an approval card for each. */
+  approvalRequests: string[]
   usage: { inputTokens: number; outputTokens: number }
 }
 
@@ -163,11 +165,13 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
   const usage = { inputTokens: 0, outputTokens: 0 }
   const toolCalls: ToolCallRecord[] = []
   const connectionRequests = new Set<Capability>()
+  const approvalRequests: string[] = []
   const done = (status: RunAgentResult['status'], reply: string): RunAgentResult => ({
     status,
     reply,
     toolCalls,
     connectionRequests: [...connectionRequests],
+    approvalRequests,
     usage,
   })
 
@@ -184,6 +188,29 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
       ...(isError ? { is_error: true } : {}),
     })
 
+    // Just-in-time permission: the system sends a one-time connect link for exactly
+    // these capabilities. The model must not write links itself.
+    async function needsConnection(err: NeedsConnectionError, toolName: string, toolInput: unknown, actionId: string) {
+      for (const c of err.capabilities) connectionRequests.add(c)
+      await actions.update(actionId, { status: 'failed', error: `needs_connection:${err.problem}` })
+      toolCalls.push({ name: toolName, input: toolInput, actionId, outcome: 'needs_connection' })
+      const products = [...new Set(err.capabilities.map((c) => CAPABILITIES[c].product))].join(' and ')
+      return result(
+        {
+          ok: false,
+          error: err.problem === 'missing_permission' ? 'permission_needed' : 'not_connected',
+          product: products,
+          needs: err.capabilities.map((c) => CAPABILITIES[c].label),
+          note:
+            `A secure one-time link to connect ${products} is being sent to the user right after your reply. ` +
+            'Tell them briefly that it is coming and what it will let you do. Do not write any link or URL ' +
+            'yourself, and do not ask for passwords. Do not retry this tool now; it is re-run automatically ' +
+            'after they connect.',
+        },
+        true,
+      )
+    }
+
     const tool = byName.get(block.name)
     if (!tool) {
       toolCalls.push({ name: block.name, input: block.input, outcome: 'invalid' })
@@ -196,13 +223,40 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
     }
 
     const decision = decide(tool.risk)
-    if (decision.kind === 'needs_approval') {
-      // Approval buttons land with the first outbound tool (T5). Until then an
-      // outbound/money call is recorded and refused, never executed.
+    if (decision.kind === 'needs_approval' && tool.risk === 'money') {
+      // Payments also need a PSP PIN step and spend limits (CLAUDE.md), which don't exist
+      // yet. Recorded and refused, never executed.
       const actionId = await actions.create({ tool: tool.name, risk: tool.risk, status: 'cancelled', input: parsed.data })
-      await actions.update(actionId, { status: 'cancelled', error: 'approval flow not available yet' })
+      await actions.update(actionId, { status: 'cancelled', error: 'payments not available yet' })
       toolCalls.push({ name: tool.name, input: parsed.data, actionId, outcome: 'blocked' })
-      return result('This action needs the user\'s approval, which is not available yet. Do not retry; tell the user.', true)
+      return result('Payments are not available yet. Do not retry; tell the user.', true)
+    }
+    if (decision.kind === 'needs_approval') {
+      // Outbound: nothing runs now. The row holds the exact input; the worker shows it on an
+      // approval card, and only the user's button press (checked by action id, user and
+      // expiry) executes it. The model has no way to approve or to change the input later.
+      const actionId = await actions.create({ tool: tool.name, risk: tool.risk, status: 'pending', input: parsed.data })
+      const requires = tool.requires?.(parsed.data) ?? []
+      if (requires.length) {
+        try {
+          await input.services.credentials.accessToken(requires)
+        } catch (err) {
+          if (err instanceof NeedsConnectionError) return needsConnection(err, tool.name, parsed.data, actionId)
+          throw err
+        }
+      }
+      await actions.update(actionId, { status: 'awaiting_approval', approvalExpiresAt: new Date(Date.now() + decision.approvalTtlMs) })
+      approvalRequests.push(actionId)
+      toolCalls.push({ name: tool.name, input: parsed.data, actionId, outcome: 'awaiting_approval' })
+      return result({
+        ok: true,
+        status: 'awaiting_approval',
+        sent: false,
+        note:
+          'Nothing has been sent. Right after your reply the user gets a card showing exactly this, with ' +
+          'Send and Cancel buttons; it expires in 15 minutes. Say in one short line that it is ready for them to ' +
+          'check and approve. Do not repeat the content and do not say it was sent.',
+      })
     }
 
     // Row first, then execution.
@@ -230,28 +284,7 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
       toolCalls.push({ name: tool.name, input: parsed.data, actionId, outcome: failed ? 'failed' : 'succeeded' })
       return result(output, failed)
     } catch (err) {
-      if (err instanceof NeedsConnectionError) {
-        // Just-in-time permission: the system sends a one-time connect link for exactly
-        // these capabilities. The model must not write links itself.
-        for (const c of err.capabilities) connectionRequests.add(c)
-        await actions.update(actionId, { status: 'failed', error: `needs_connection:${err.problem}` })
-        toolCalls.push({ name: tool.name, input: parsed.data, actionId, outcome: 'needs_connection' })
-        const products = [...new Set(err.capabilities.map((c) => CAPABILITIES[c].product))].join(' and ')
-        return result(
-          {
-            ok: false,
-            error: err.problem === 'missing_permission' ? 'permission_needed' : 'not_connected',
-            product: products,
-            needs: err.capabilities.map((c) => CAPABILITIES[c].label),
-            note:
-              `A secure one-time link to connect ${products} is being sent to the user right after your reply. ` +
-              'Tell them briefly that it is coming and what it will let you do. Do not write any link or URL ' +
-              'yourself, and do not ask for passwords. Do not retry this tool now; it is re-run automatically ' +
-              'after they connect.',
-          },
-          true,
-        )
-      }
+      if (err instanceof NeedsConnectionError) return needsConnection(err, tool.name, parsed.data, actionId)
       const message = err instanceof Error ? err.message : String(err)
       await actions.update(actionId, { status: 'failed', error: message })
       toolCalls.push({ name: tool.name, input: parsed.data, actionId, outcome: 'failed' })

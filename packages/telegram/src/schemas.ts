@@ -44,6 +44,15 @@ export const telegramMessageSchema = z.looseObject({
 export const telegramUpdateSchema = z.looseObject({
   update_id: z.number(),
   message: z.unknown().optional(),
+  callback_query: z.unknown().optional(),
+})
+
+/** A press of one of our inline buttons. `message` is the message that carried the button. */
+export const telegramCallbackQuerySchema = z.looseObject({
+  id: z.string(),
+  from: userSchema,
+  message: z.looseObject({ message_id: z.number(), date: z.number(), chat: z.looseObject({ id: z.number(), type: z.string() }) }).optional(),
+  data: z.string().optional(),
 })
 
 export type TelegramMessage = z.infer<typeof telegramMessageSchema>

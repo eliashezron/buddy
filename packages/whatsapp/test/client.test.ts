@@ -26,6 +26,19 @@ describe('CloudApiClient', () => {
     expect(JSON.parse(String(f.calls[0]!.init.body))).toMatchObject({ to: '256770000001', type: 'text', text: { body: 'hi' } })
   })
 
+  it('sends interactive reply buttons', async () => {
+    const f = fakeFetch([{ status: 200, body: { messages: [{ id: 'wamid.BTN' }] } }])
+    const client = new CloudApiClient({ ...base, fetch: f.impl })
+    await expect(client.sendButtons('256770000001', 'Send?', [{ id: 'approve:x', title: 'Send' }])).resolves.toEqual({ messageId: 'wamid.BTN' })
+    expect(JSON.parse(String(f.calls[0]!.init.body))).toEqual({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: '256770000001',
+      type: 'interactive',
+      interactive: { type: 'button', body: { text: 'Send?' }, action: { buttons: [{ type: 'reply', reply: { id: 'approve:x', title: 'Send' } }] } },
+    })
+  })
+
   it('retries 5xx and 429, then succeeds', async () => {
     const f = fakeFetch([
       { status: 500, body: {} },

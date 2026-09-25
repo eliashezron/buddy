@@ -104,6 +104,44 @@ describe('parseTelegramUpdate', () => {
   })
 })
 
+describe('parseTelegramUpdate: button presses', () => {
+  const ACTION = '0b6f6c55-3a1e-4d1f-9c55-2d1c1f5c9e11'
+  const cb = (over: Record<string, unknown> = {}, message: Record<string, unknown> = {}) => ({
+    update_id: 5,
+    callback_query: {
+      id: '4382bfdwdsb323b2d9',
+      from: { id: 555000111, is_bot: false, first_name: 'Elias' },
+      message: { message_id: 42, date: 1790000000, chat: { id: 555000111, type: 'private' }, ...message },
+      data: `approve:${ACTION}`,
+      ...over,
+    },
+  })
+
+  it('turns a press in the user\'s own chat into a button message carrying the payload and callback id', () => {
+    const e = parseWithBot(cb(), { botId: BOT_ID }).events[0]
+    expect(e).toMatchObject({
+      kind: 'message',
+      message: {
+        channel: 'telegram',
+        id: `${BOT_ID}:555000111:cb:4382bfdwdsb323b2d9`,
+        from: '555000111',
+        type: 'button',
+        platformMessageId: '42',
+        reply: { id: `approve:${ACTION}` },
+        callbackId: '4382bfdwdsb323b2d9',
+      },
+    })
+  })
+
+  it('ignores presses from anyone but the chat owner, in groups, by bots, or without data', () => {
+    const skipped = (u: unknown) => parseWithBot(u, { botId: BOT_ID })
+    expect(skipped(cb({ from: { id: 999, is_bot: false, first_name: 'M' } }))).toMatchObject({ events: [], skipped: [{ reason: 'not from the chat owner' }] })
+    expect(skipped(cb({}, { chat: { id: 555000111, type: 'group' } })).events).toEqual([])
+    expect(skipped(cb({ from: { id: 555000111, is_bot: true, first_name: 'B' } })).events).toEqual([])
+    expect(skipped(cb({ data: undefined })).skipped).toEqual([{ field: 'callback_query', reason: 'malformed callback query' }])
+  })
+})
+
 describe('toTelegramHtml', () => {
   it('converts the agent Markdown subset', () => {
     expect(toTelegramHtml('## Options\n**Kololo Hall** holds _20_.\n- [Site](https://example.com/a?b=1&c=2)\n- ~~old~~ `code`')).toBe(
@@ -160,6 +198,43 @@ describe('Telegram channel', () => {
   })
 })
 
+describe('Telegram approval cards', () => {
+  const ACTION = '0b6f6c55-3a1e-4d1f-9c55-2d1c1f5c9e11'
+  const card = (preview: string) => ({ actionId: ACTION, preview, title: 'Email to kato@example.com', approveLabel: 'Send' })
+
+  it('puts the preview and Send / Cancel buttons in one message', async () => {
+    const client = new FakeTelegramClient()
+    const ids = await createTelegramChannel({ client, botId: '9' }).sendApproval('555', card('**Send this?**\nTo: kato@example.com'))
+    expect(ids).toEqual(['9:555:1'])
+    expect(client.sent).toEqual([
+      {
+        method: 'sendMessage',
+        chatId: '555',
+        text: '<b>Send this?</b>\nTo: kato@example.com',
+        html: true,
+        buttons: [[{ text: '✅ Send', data: `approve:${ACTION}` }, { text: '✖ Cancel', data: `cancel:${ACTION}` }]],
+      },
+    ])
+  })
+
+  it('sends a long preview in full first, then a short card with the buttons', async () => {
+    const client = new FakeTelegramClient()
+    await createTelegramChannel({ client, botId: '9' }).sendApproval('555', card(`${'a'.repeat(3000)}\n\n${'b'.repeat(3000)}`))
+    expect(client.sent.map((m) => Boolean(m.buttons))).toEqual([false, false, true])
+    expect(client.sent.at(-1)!.text).toContain('approve the message above?')
+  })
+
+  it('closes a card: answers the press and removes the buttons, ignoring failures', async () => {
+    const client = new FakeTelegramClient()
+    client.removeButtons = async () => {
+      throw new TelegramApiError(400, 'Bad Request: message is not modified')
+    }
+    const pressed = { channel: 'telegram', id: 'x', from: '555', timestamp: 1, type: 'button', platformMessageId: '42', callbackId: 'cb' } satisfies InboundMessage
+    await expect(createTelegramChannel({ client, botId: '9' }).closeApproval(pressed, 'Cancelled')).resolves.toBeUndefined()
+    expect(client.calls).toEqual([{ method: 'answerCallbackQuery', callbackId: 'cb', text: 'Cancelled' }])
+  })
+})
+
 describe('BotApiClient', () => {
   const token = '123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawQ'
   function fakeFetch(responses: { status: number; body: unknown }[]) {
@@ -178,6 +253,21 @@ describe('BotApiClient', () => {
     await expect(client.sendMessage('555', '<b>x</b>', { html: true })).resolves.toEqual({ messageId: '77' })
     expect(f.calls[0]!.url).toBe(`https://api.telegram.org/bot${token}/sendMessage`)
     expect(f.calls[0]!.body).toEqual({ chat_id: '555', text: '<b>x</b>', parse_mode: 'HTML', link_preview_options: { is_disabled: true } })
+  })
+
+  it('sends inline keyboards and subscribes to button presses', async () => {
+    const f = fakeFetch([
+      { status: 200, body: { ok: true, result: { message_id: 78 } } },
+      { status: 200, body: { ok: true, result: [] } },
+      { status: 200, body: { ok: true, result: true } },
+    ])
+    const client = new BotApiClient({ token, logger, fetch: f.impl })
+    await client.sendMessage('555', 'Send?', { buttons: [[{ text: 'Send', data: 'approve:x' }]] })
+    expect(f.calls[0]!.body).toMatchObject({ reply_markup: { inline_keyboard: [[{ text: 'Send', callback_data: 'approve:x' }]] } })
+    await client.getUpdates(0, 0)
+    expect(f.calls[1]!.body).toMatchObject({ allowed_updates: ['message', 'callback_query'] })
+    await client.setWebhook('https://x/telegram/webhook', 'secret')
+    expect(f.calls[2]!.body).toMatchObject({ allowed_updates: ['message', 'callback_query'] })
   })
 
   it('honours retry_after on 429, then succeeds', async () => {

@@ -30,6 +30,8 @@ export interface InboundMessage {
   media?: { kind: string; id: string; mimeType?: string; caption?: string; voice?: boolean }
   /** Interactive button/list reply, or template quick-reply button. */
   reply?: { id: string; title: string }
+  /** Telegram inline-button press: the callback query to answer. */
+  callbackId?: string
 }
 
 /** Delivery status for a message we sent (WhatsApp only today). */
@@ -54,6 +56,38 @@ export interface Channel {
   sendText(to: string, markdown: string): Promise<string[]>
   /** Read receipt / typing indicator while the agent works. Returns a function that stops it. */
   startTyping(message: InboundMessage): () => void
+  /**
+   * Sends an approval card: the full preview plus Approve / Cancel buttons whose ids come
+   * from `approvalButtonId`. Only a press of one of these buttons can approve an action.
+   */
+  sendApproval(to: string, card: ApprovalCard): Promise<string[]>
+  /** After a button press: stop the client's spinner and close the card, where the platform allows it. */
+  closeApproval(message: InboundMessage, outcome: string): Promise<void>
+}
+
+export interface ApprovalCard {
+  actionId: string
+  /** Everything that will be sent, from the tool's `preview`. */
+  preview: string
+  /** One line, from the tool's `title`. */
+  title: string
+  approveLabel: string
+}
+
+export type ApprovalDecision = 'approve' | 'cancel'
+
+const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+const BUTTON_ID = new RegExp(`^(approve|cancel):(${UUID})$`)
+
+/** Button payload for an approval card: `approve:<action id>` (44 chars, under Telegram's 64-byte limit). */
+export function approvalButtonId(decision: ApprovalDecision, actionId: string): string {
+  return `${decision}:${actionId}`
+}
+
+/** Parses a button payload. Anything else, including typed text that looks like one, is not a decision. */
+export function parseApprovalButton(id: string): { decision: ApprovalDecision; actionId: string } | null {
+  const m = BUTTON_ID.exec(id)
+  return m ? { decision: m[1] as ApprovalDecision, actionId: m[2]! } : null
 }
 
 /** Send failures. `permanent` ones are logged and dropped; the rest are retried by the queue. */

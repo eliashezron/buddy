@@ -79,4 +79,39 @@ describe.skipIf(!url)('connector repo (postgres)', () => {
     await add(await run(3), new Date(now.getTime() - 1))
     expect(await repo.latestUndoableActions(userId, now)).toEqual([])
   })
+
+  it('approves an outbound action at most once, only for its user, only before it expires', async () => {
+    const msg = await repo.insertInboundMessage({ userId, channel: 'telegram', externalMessageId: `c${suffix}:appr`, type: 'text', body: 'x', sentAt: new Date() })
+    const runId = await repo.createRun({ userId, triggerMessageId: msg.id, model: 'm' })
+    const now = new Date()
+    const pending = async (expiresAt: Date) => {
+      const id = await repo.createAction({ userId, runId, tool: 'gmail_send_email', risk: 'outbound', status: 'pending', input: { to: ['k@example.com'] } })
+      await repo.updateAction(id, { status: 'awaiting_approval', approvalExpiresAt: expiresAt })
+      return id
+    }
+    const later = new Date(now.getTime() + 15 * 60_000)
+
+    // Four taps at once: exactly one claims it.
+    const a = await pending(later)
+    const taps = await Promise.all([1, 2, 3, 4].map(() => repo.decideApproval({ actionId: a, userId, decision: 'approve', now })))
+    expect(taps.filter((t) => t.kind === 'approved')).toHaveLength(1)
+    expect(taps.filter((t) => t.kind === 'already_decided')).toHaveLength(3)
+    const approved = taps.find((t) => t.kind === 'approved')!
+    expect(approved).toMatchObject({ action: { id: a, status: 'running', input: { to: ['k@example.com'] } } })
+    expect((approved as { action: { decidedAt: Date } }).action.decidedAt).toBeInstanceOf(Date)
+
+    // Another user can't touch it, and learns nothing about it.
+    const b = await pending(later)
+    const otherUser = (await repo.upsertUserOnInbound({ channel: 'telegram', externalId: `other${suffix}`, at: now, timezone: 'UTC' })).id
+    expect(await repo.decideApproval({ actionId: b, userId: otherUser, decision: 'approve', now })).toEqual({ kind: 'not_found' })
+
+    // Cancel, then approve: stays cancelled.
+    expect((await repo.decideApproval({ actionId: b, userId, decision: 'cancel', now })).kind).toBe('cancelled')
+    expect((await repo.decideApproval({ actionId: b, userId, decision: 'approve', now })).kind).toBe('already_decided')
+
+    // Expired: not approvable, and marked expired.
+    const c = await pending(new Date(now.getTime() - 1))
+    expect((await repo.decideApproval({ actionId: c, userId, decision: 'approve', now })).kind).toBe('expired')
+    expect((await repo.decideApproval({ actionId: c, userId, decision: 'approve', now })).kind).toBe('already_decided')
+  })
 })

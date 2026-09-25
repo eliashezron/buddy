@@ -41,4 +41,39 @@ describe('WhatsApp channel', () => {
     ch.startTyping(msg)()
     expect(client.calls).toEqual([{ method: 'markRead', messageId: 'wamid.IN', typing: true }])
   })
+
+  describe('approval cards', () => {
+    const ACTION = '0b6f6c55-3a1e-4d1f-9c55-2d1c1f5c9e11'
+    const card = (preview: string) => ({ actionId: ACTION, preview, title: 'Email to kato@example.com', approveLabel: 'Send' })
+    const open = () => new Date(now.getTime() - 60_000)
+
+    it('puts a short preview on the button message itself', async () => {
+      const client = new FakeWhatsAppClient()
+      const ch = createWhatsAppChannel({ client, getLastInboundAt: async () => open(), now: () => now })
+      await ch.sendApproval('256770000001', card('**Send this?**'))
+      expect(client.calls).toEqual([
+        {
+          method: 'sendButtons',
+          to: '256770000001',
+          body: '*Send this?*',
+          buttons: [{ id: `approve:${ACTION}`, title: 'Send' }, { id: `cancel:${ACTION}`, title: 'Cancel' }],
+        },
+      ])
+    })
+
+    it('sends a preview over 1024 chars in full first, then the buttons', async () => {
+      const client = new FakeWhatsAppClient()
+      const ch = createWhatsAppChannel({ client, getLastInboundAt: async () => open(), now: () => now })
+      await ch.sendApproval('256770000001', card('x'.repeat(1500)))
+      expect(client.calls.map((c) => c.method)).toEqual(['sendText', 'sendButtons'])
+      expect((client.calls[0] as { body: string }).body).toHaveLength(1500)
+    })
+
+    it('respects the 24 h window like any other send', async () => {
+      const client = new FakeWhatsAppClient()
+      const ch = createWhatsAppChannel({ client, getLastInboundAt: async () => null, now: () => now })
+      await expect(ch.sendApproval('256770000001', card('hi'))).rejects.toBeInstanceOf(OutsideServiceWindowError)
+      expect(client.calls).toEqual([])
+    })
+  })
 })

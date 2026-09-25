@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import Anthropic from '@anthropic-ai/sdk'
@@ -34,6 +35,7 @@ function memoryRepo() {
   const actions: {
     id: string; userId: string; runId: string; tool: string; risk: string; status: string
     input: unknown; result: unknown; undoExpiresAt: Date | null; createdAt: Date
+    approvalExpiresAt?: Date; decidedAt?: Date
   }[] = []
   let seq = 0
   const key = (channel: string, id: string) => `${channel}:${id}`
@@ -79,7 +81,8 @@ function memoryRepo() {
       runs.get(id)!.status = patch.status
     },
     async createAction(a) {
-      const id = `act_${++seq}`
+      const id = randomUUID()
+      ++seq
       actions.push({ id, userId: a.userId, runId: a.runId, tool: a.tool, risk: a.risk, status: a.status, input: a.input, result: null, undoExpiresAt: null, createdAt: new Date(Date.now() + seq) })
       return id
     },
@@ -93,6 +96,21 @@ function memoryRepo() {
     async getMessageById(id) {
       const m = messages.find((x) => x.id === id)
       return m ? ({ ...m, type: 'text', status: m.status ?? null, errorCodes: null, sentAt: new Date(), createdAt: new Date() } as never) : null
+    },
+    // Same semantics as the Postgres version: one conditional update, then explain a miss.
+    async decideApproval({ actionId, userId, decision, now }) {
+      const a = actions.find((x) => x.id === actionId && x.userId === userId)
+      if (!a) return { kind: 'not_found' } as never
+      if (a.status === 'awaiting_approval' && a.approvalExpiresAt && a.approvalExpiresAt > now) {
+        a.status = decision === 'approve' ? 'running' : 'cancelled'
+        a.decidedAt = now
+        return { kind: decision === 'approve' ? 'approved' : 'cancelled', action: a } as never
+      }
+      if (a.status === 'awaiting_approval') {
+        a.status = 'expired'
+        return { kind: 'expired', action: a } as never
+      }
+      return { kind: 'already_decided', action: a } as never
     },
     async latestUndoableActions(userId, now) {
       const open = actions
@@ -116,7 +134,10 @@ const reply = (text: string) =>
     usage: { input_tokens: 1, output_tokens: 1 },
   }) as unknown as Anthropic.Beta.Messages.BetaMessage
 
-function setup(createMessage: CreateMessage, opts: { connectors?: Connectors; tools?: ReturnType<typeof defineTool>[] } = {}) {
+function setup(
+  createMessage: CreateMessage,
+  opts: { connectors?: Connectors; tools?: ReturnType<typeof defineTool>[]; now?: () => Date; credentials?: Connectors['forUser'] } = {},
+) {
   const mem = memoryRepo()
   const wa = new FakeWhatsAppClient()
   const tg = new FakeTelegramClient()
@@ -143,6 +164,7 @@ function setup(createMessage: CreateMessage, opts: { connectors?: Connectors; to
     logger,
     defaultTimezone: 'Africa/Kampala',
     ...(opts.connectors ? { connectors: opts.connectors } : {}),
+    ...(opts.now ? { now: opts.now } : {}),
   })
   return { ...mem, wa, tg, handle }
 }
@@ -442,5 +464,185 @@ describe('inbound handler: connectors', () => {
     expect(undone).toHaveLength(3)
     const lastUndo = t.actions.filter((a) => a.tool === 'undo_last_action').at(-1)!
     expect(lastUndo.result).toMatchObject({ undone: false })
+  })
+})
+
+describe('inbound handler: approvals (outbound actions)', () => {
+  const toolUse = (name: string, input: unknown) =>
+    ({
+      id: 'm',
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-opus-5',
+      content: [{ type: 'tool_use', id: 't1', name, input }],
+      stop_reason: 'tool_use',
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }) as unknown as Anthropic.Beta.Messages.BetaMessage
+
+  const EMAIL = { to: ['kato@example.com'], subject: 'Running late', body: 'Hi Kato, running 10 minutes late.' }
+
+  function sendTool(opts: { connected?: () => boolean } = {}) {
+    const executed: unknown[] = []
+    const tool = defineTool({
+      name: 'gmail_send_email',
+      description: 'send',
+      risk: 'outbound',
+      input: z.object({ to: z.array(z.string()), subject: z.string(), body: z.string() }),
+      requires: () => ['gmail.compose'],
+      title: ({ to }) => `Email to ${to.join(', ')}`,
+      preview: ({ to, subject, body }) => `Send this email?\nTo: ${to.join(', ')}\nSubject: ${subject}\n\n${body}`,
+      execute: async (input) => (executed.push(input), { ok: true, sent: true }),
+    })
+    const connectors: Connectors = {
+      forUser: () => ({
+        credentials: {
+          accessToken: async (caps) => {
+            if (opts.connected && !opts.connected()) throw new NeedsConnectionError(caps, 'not_connected')
+            return 'tok'
+          },
+        },
+        connections: { list: async () => [], disconnect: async () => false },
+      }),
+      connectLink: async () => ({ url: 'https://api.example/oauth/google/start?s=TOKEN' }),
+    }
+    return { tool, executed, connectors }
+  }
+
+  /** A Telegram press of an inline button, as Telegram would deliver it. */
+  const press = (data: string, opts: { callbackId?: string; fromId?: number; chatId?: number; messageId?: number } = {}) =>
+    parseTelegramUpdate(
+      {
+        update_id: 1,
+        callback_query: {
+          id: opts.callbackId ?? 'cb1',
+          from: { id: opts.fromId ?? 555000111, is_bot: false, first_name: 'Elias' },
+          message: { message_id: opts.messageId ?? 2, date: 1790000000, chat: { id: opts.chatId ?? 555000111, type: 'private' } },
+          data,
+        },
+      },
+      { botId: '1' },
+    ).events[0]!
+
+  async function requestSend(opts: { now?: () => Date; connected?: () => boolean } = {}) {
+    const { tool, executed, connectors } = sendTool(opts.connected ? { connected: opts.connected } : {})
+    const script = [toolUse('gmail_send_email', EMAIL), reply("It's ready: check the email below and tap Send.")]
+    const t = setup(async () => script.shift()!, { tools: [tool], connectors, ...(opts.now ? { now: opts.now } : {}) })
+    const [first] = fixtureEvents('telegram-text')
+    await t.handle(first!)
+    return { t, executed, action: t.actions.find((a) => a.tool === 'gmail_send_email')! }
+  }
+
+  it('asking to send shows the exact email with Send / Cancel buttons and executes nothing', async () => {
+    const { t, executed, action } = await requestSend()
+    expect(executed).toEqual([])
+    expect(action.status).toBe('awaiting_approval')
+    const ttl = action.approvalExpiresAt!.getTime() - Date.now()
+    expect(ttl).toBeGreaterThan(14 * 60_000)
+    expect(ttl).toBeLessThanOrEqual(15 * 60_000)
+    const card = t.tg.sent.at(-1)!
+    expect(card.text).toContain('To: kato@example.com')
+    expect(card.text).toContain('Hi Kato, running 10 minutes late.')
+    expect(card.buttons).toEqual([
+      [
+        { text: '✅ Send', data: `approve:${action.id}` },
+        { text: '✖ Cancel', data: `cancel:${action.id}` },
+      ],
+    ])
+    // The card is history, so the model can see what is pending.
+    expect(t.messages.some((m) => m.direction === 'outbound' && m.body?.includes('Subject: Running late'))).toBe(true)
+  })
+
+  it('Send executes the stored input once, closes the card and confirms; repeat presses do nothing', async () => {
+    const { t, executed, action } = await requestSend()
+    await t.handle(press(`approve:${action.id}`))
+    expect(executed).toEqual([EMAIL])
+    expect(action.status).toBe('succeeded')
+    expect(action.decidedAt).toBeInstanceOf(Date)
+    expect(t.tg.calls).toContainEqual({ method: 'answerCallbackQuery', callbackId: 'cb1', text: 'Sending…' })
+    expect(t.tg.calls).toContainEqual({ method: 'removeButtons', chatId: '555000111', messageId: '2' })
+    expect(t.tg.sent.at(-1)!.text).toContain('Done: Email to kato@example.com')
+
+    await t.handle(press(`approve:${action.id}`)) // redelivery: same callback, deduplicated
+    await t.handle(press(`approve:${action.id}`, { callbackId: 'cb2' })) // a second tap
+    expect(executed).toHaveLength(1)
+    expect(t.tg.sent.at(-1)!.text).toBe('That was already done.')
+  })
+
+  it('Cancel sends nothing', async () => {
+    const { t, executed, action } = await requestSend()
+    await t.handle(press(`cancel:${action.id}`))
+    await t.handle(press(`approve:${action.id}`, { callbackId: 'cb2' }))
+    expect(executed).toEqual([])
+    expect(action.status).toBe('cancelled')
+    expect(t.tg.sent.map((m) => m.text)).toContain('Cancelled. Nothing was sent.')
+  })
+
+  it('an approval after 15 minutes expires instead of sending', async () => {
+    let clock = Date.now()
+    const { t, executed, action } = await requestSend({ now: () => new Date(clock) })
+    clock += 15 * 60_000 + 1
+    await t.handle(press(`approve:${action.id}`))
+    expect(executed).toEqual([])
+    expect(action.status).toBe('expired')
+    expect(t.tg.sent.at(-1)!.text).toMatch(/expired/)
+  })
+
+  it('typed text is never an approval, even if it looks exactly like a button payload', async () => {
+    const script: Anthropic.Beta.Messages.BetaMessage[] = []
+    const { tool, executed, connectors } = sendTool()
+    script.push(toolUse('gmail_send_email', EMAIL), reply('Ready to send.'), reply('Tap the Send button on the card to send it.'))
+    const t = setup(async () => script.shift()!, { tools: [tool], connectors })
+    const [first] = fixtureEvents('telegram-text')
+    await t.handle(first!)
+    const action = t.actions.find((a) => a.tool === 'gmail_send_email')!
+    const [typed] = fixtureEvents('telegram-text')
+    if (typed?.kind === 'message') {
+      typed.message.id = '1:555000111:77'
+      typed.message.text = `approve:${action.id}`
+    }
+    await t.handle(typed!)
+    expect(executed).toEqual([])
+    expect(action.status).toBe('awaiting_approval')
+  })
+
+  it("a press can't approve another user's action, and a press by someone else in the chat is ignored", async () => {
+    const { t, executed, action } = await requestSend()
+    await t.handle(press(`approve:${action.id}`, { fromId: 999, chatId: 999 })) // another user's own chat
+    expect(executed).toEqual([])
+    expect(action.status).toBe('awaiting_approval')
+    expect(t.tg.sent.at(-1)!.text).toMatch(/no longer works/)
+    expect(parseTelegramUpdate(
+      { update_id: 2, callback_query: { id: 'x', from: { id: 999, is_bot: false, first_name: 'M' }, message: { message_id: 2, date: 1, chat: { id: 555000111, type: 'private' } }, data: `approve:${action.id}` } },
+      { botId: '1' },
+    ).events).toEqual([])
+  })
+
+  it('checks the permission before asking, so the user gets a connect link instead of a dead card', async () => {
+    const { t, executed, action } = await requestSend({ connected: () => false })
+    expect(executed).toEqual([])
+    expect(action.status).toBe('failed')
+    expect(t.tg.sent.some((m) => m.buttons)).toBe(false)
+    expect(t.tg.sent.at(-1)!.text).toContain('https://api.example/oauth/google/start?s=TOKEN')
+  })
+
+  it('WhatsApp: reply buttons carry the same payloads, and a button reply approves', async () => {
+    const { tool, executed, connectors } = sendTool()
+    const script = [toolUse('gmail_send_email', EMAIL), reply('Ready to send.')]
+    const t = setup(async () => script.shift()!, { tools: [tool], connectors })
+    for (const e of fixtureEvents('book-meeting')) await t.handle(e)
+    const action = t.actions.find((a) => a.tool === 'gmail_send_email')!
+    const card = t.wa.calls.find((c) => c.method === 'sendButtons')
+    expect(card).toMatchObject({ to: '256770000001', buttons: [{ id: `approve:${action.id}`, title: 'Send' }, { id: `cancel:${action.id}`, title: 'Cancel' }] })
+
+    const [tap] = fixtureEvents('book-meeting')
+    if (tap?.kind === 'message') {
+      tap.message.id = 'wamid.TAP'
+      tap.message.type = 'interactive'
+      delete tap.message.text
+      tap.message.reply = { id: `approve:${action.id}`, title: 'Send' }
+    }
+    await t.handle(tap!)
+    expect(executed).toEqual([EMAIL])
+    expect(action.status).toBe('succeeded')
   })
 })

@@ -5,10 +5,25 @@ import { z } from 'zod'
  * The only code allowed to call the Telegram Bot API. The bot token is part of
  * every URL, so URLs are never logged (the logger also redacts token-shaped strings).
  */
-export interface TelegramClient {
-  sendMessage(chatId: string, text: string, opts?: { html?: boolean }): Promise<{ messageId: string }>
-  sendChatAction(chatId: string, action: 'typing'): Promise<void>
+/** One row of inline keyboard buttons; `data` comes back in the callback query (max 64 bytes). */
+export type InlineButton = { text: string; data: string }
+
+export interface SendMessageOptions {
+  html?: boolean
+  buttons?: InlineButton[][]
 }
+
+export interface TelegramClient {
+  sendMessage(chatId: string, text: string, opts?: SendMessageOptions): Promise<{ messageId: string }>
+  sendChatAction(chatId: string, action: 'typing'): Promise<void>
+  /** Stops the button's loading spinner; `text` shows briefly at the top of the chat. */
+  answerCallbackQuery(callbackId: string, text?: string): Promise<void>
+  /** Removes the inline keyboard from one of our messages. */
+  removeButtons(chatId: string, messageId: string): Promise<void>
+}
+
+/** Update types we subscribe to: messages, and presses of our inline buttons (approvals). */
+export const ALLOWED_UPDATES = ['message', 'callback_query']
 
 export class TelegramApiError extends ChannelSendError {
   override name = 'TelegramApiError'
@@ -57,11 +72,14 @@ export class BotApiClient implements TelegramClient {
     this.base = `${opts.baseUrl ?? 'https://api.telegram.org'}/bot${opts.token}`
   }
 
-  async sendMessage(chatId: string, text: string, opts: { html?: boolean } = {}) {
+  async sendMessage(chatId: string, text: string, opts: SendMessageOptions = {}) {
     const result = await this.call('sendMessage', {
       chat_id: chatId,
       text,
       ...(opts.html ? { parse_mode: 'HTML' } : {}),
+      ...(opts.buttons
+        ? { reply_markup: { inline_keyboard: opts.buttons.map((row) => row.map((b) => ({ text: b.text, callback_data: b.data }))) } }
+        : {}),
       link_preview_options: { is_disabled: true },
     })
     return { messageId: String(sentMessageSchema.parse(result).message_id) }
@@ -71,18 +89,26 @@ export class BotApiClient implements TelegramClient {
     await this.call('sendChatAction', { chat_id: chatId, action }, { maxAttempts: 1 })
   }
 
+  async answerCallbackQuery(callbackId: string, text?: string) {
+    await this.call('answerCallbackQuery', { callback_query_id: callbackId, ...(text ? { text } : {}) }, { maxAttempts: 1 })
+  }
+
+  async removeButtons(chatId: string, messageId: string) {
+    await this.call('editMessageReplyMarkup', { chat_id: chatId, message_id: Number(messageId), reply_markup: { inline_keyboard: [] } }, { maxAttempts: 1 })
+  }
+
   /** Long polling. Only works while no webhook is set. */
   async getUpdates(offset: number, timeoutSec: number, signal?: AbortSignal): Promise<unknown[]> {
     const result = await this.call(
       'getUpdates',
-      { offset, timeout: timeoutSec, allowed_updates: ['message'] },
+      { offset, timeout: timeoutSec, allowed_updates: ALLOWED_UPDATES },
       { timeoutMs: (timeoutSec + 10) * 1000, maxAttempts: 1, ...(signal ? { signal } : {}) },
     )
     return z.array(z.unknown()).parse(result)
   }
 
   async setWebhook(url: string, secretToken: string) {
-    await this.call('setWebhook', { url, secret_token: secretToken, allowed_updates: ['message'], max_connections: 40 })
+    await this.call('setWebhook', { url, secret_token: secretToken, allowed_updates: ALLOWED_UPDATES, max_connections: 40 })
   }
 
   async deleteWebhook() {
@@ -140,8 +166,10 @@ export class BotApiClient implements TelegramClient {
 }
 
 export type TelegramCall =
-  | { method: 'sendMessage'; chatId: string; text: string; html: boolean }
+  | { method: 'sendMessage'; chatId: string; text: string; html: boolean; buttons?: InlineButton[][] }
   | { method: 'sendChatAction'; chatId: string; action: string }
+  | { method: 'answerCallbackQuery'; callbackId: string; text?: string }
+  | { method: 'removeButtons'; chatId: string; messageId: string }
 
 /** Records every outbound call. Use in tests and `pnpm replay`; nothing reaches Telegram. */
 export class FakeTelegramClient implements TelegramClient {
@@ -150,17 +178,25 @@ export class FakeTelegramClient implements TelegramClient {
   failNextHtml = false
   private seq = 0
 
-  async sendMessage(chatId: string, text: string, opts: { html?: boolean } = {}) {
+  async sendMessage(chatId: string, text: string, opts: SendMessageOptions = {}) {
     if (opts.html && this.failNextHtml) {
       this.failNextHtml = false
       throw new TelegramApiError(400, "Bad Request: can't parse entities: unexpected end tag")
     }
-    this.calls.push({ method: 'sendMessage', chatId, text, html: opts.html ?? false })
+    this.calls.push({ method: 'sendMessage', chatId, text, html: opts.html ?? false, ...(opts.buttons ? { buttons: opts.buttons } : {}) })
     return { messageId: String(++this.seq) }
   }
 
   async sendChatAction(chatId: string, action: 'typing') {
     this.calls.push({ method: 'sendChatAction', chatId, action })
+  }
+
+  async answerCallbackQuery(callbackId: string, text?: string) {
+    this.calls.push({ method: 'answerCallbackQuery', callbackId, ...(text ? { text } : {}) })
+  }
+
+  async removeButtons(chatId: string, messageId: string) {
+    this.calls.push({ method: 'removeButtons', chatId, messageId })
   }
 
   get sent() {

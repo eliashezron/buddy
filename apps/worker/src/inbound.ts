@@ -3,6 +3,7 @@ import {
   CAPABILITIES,
   ChannelSendError,
   noServices,
+  parseApprovalButton,
   type AnyTool,
   type Capability,
   type Channel,
@@ -18,6 +19,7 @@ import {
   type UndoService,
 } from '@wa/core'
 import type { Repo, User } from '@wa/db'
+import { createApprovals } from './approvals.js'
 import { KeyedLock } from './lock.js'
 
 export type InboundRepo = Pick<
@@ -35,6 +37,7 @@ export type InboundRepo = Pick<
   | 'getUserById'
   | 'getMessageById'
   | 'latestUndoableActions'
+  | 'decideApproval'
 >
 
 /** Google (or other) connectors for one user. Absent when no connector is configured. */
@@ -137,6 +140,24 @@ export function createInboundHandler(deps: InboundDeps) {
     }
   }
 
+  async function sendConnectLink(user: User, capabilities: Capability[], triggerMessageId: string | null = null) {
+    if (!deps.connectors) return
+    // The system writes the link, never the model.
+    const { url } = await deps.connectors.connectLink({ userId: user.id, capabilities, triggerMessageId })
+    await reply(user, connectLinkText(capabilities, url))
+  }
+
+  const approvals = createApprovals({
+    repo,
+    toolsByName,
+    channelFor: (user) => channelFor(user.channel),
+    reply,
+    servicesFor,
+    sendConnectLink: (user, caps) => sendConnectLink(user, caps),
+    logger,
+    now,
+  })
+
   function servicesFor(user: User): ToolServices {
     const base = deps.connectors?.forUser(user.id) ?? noServices()
     const services: ToolServices = { credentials: base.credentials, connections: base.connections, undo: undoFor(user) }
@@ -236,15 +257,9 @@ export function createInboundHandler(deps: InboundDeps) {
     )
     try {
       await reply(user, result.reply)
-      if (result.connectionRequests.length && deps.connectors) {
-        // The system writes the link, never the model.
-        const { url } = await deps.connectors.connectLink({
-          userId: user.id,
-          capabilities: result.connectionRequests,
-          triggerMessageId: opts.triggerMessageId,
-        })
-        await reply(user, connectLinkText(result.connectionRequests, url))
-      }
+      if (result.connectionRequests.length) await sendConnectLink(user, result.connectionRequests, opts.triggerMessageId)
+      const pending = result.toolCalls.filter((t) => t.outcome === 'awaiting_approval' && t.actionId)
+      await approvals.sendCards(user, pending.map((t) => ({ actionId: t.actionId!, tool: t.name, input: t.input })), log)
     } catch (err) {
       await repo.finishRun(runId, { ...result.usage, status: 'failed', error: 'reply send failed' })
       throw err
@@ -272,6 +287,15 @@ export function createInboundHandler(deps: InboundDeps) {
     })
     if (!stored.isNew && (await repo.hasCompletedRun(stored.id))) {
       log.info('duplicate delivery, already handled')
+      return
+    }
+
+    // Approval buttons. Only a button payload counts; typed text never approves anything.
+    const button = m.reply ? parseApprovalButton(m.reply.id) : null
+    if (button) {
+      const runId = await repo.createRun({ userId: user.id, triggerMessageId: stored.id, model: 'approval' })
+      await approvals.decide(user, m, button, log)
+      await repo.finishRun(runId, { status: 'succeeded', inputTokens: 0, outputTokens: 0 })
       return
     }
 
