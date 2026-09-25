@@ -94,14 +94,17 @@ const labels = (caps: Capability[]) => {
 }
 const products = (caps: Capability[]) => [...new Set(caps.map((c) => CAPABILITIES[c].product))].join(' and ')
 
-export function connectLinkText(capabilities: Capability[], url: string): string {
-  return [
-    `🔐 To let me ${labels(capabilities)}, connect your Google account:`,
-    url,
-    '',
-    'The link works once and expires in 15 minutes. I only get the access listed on the Google screen, ' +
-      'and you can remove it any time: just say "disconnect Google".',
-  ].join('\n')
+/** The connect message. The URL goes on a button, not in the text (see `Channel.sendLink`). */
+export function connectLinkMessage(capabilities: Capability[]): { text: string; label: string } {
+  return {
+    text: [
+      `🔐 To let me ${labels(capabilities)}, connect your Google account with the button below.`,
+      '',
+      'It works once and expires in 15 minutes. I only get the access listed on the Google screen, ' +
+        'and you can remove it any time: just say "disconnect Google".',
+    ].join('\n'),
+    label: 'Connect Google',
+  }
 }
 
 /** What we store as the body. Content only; never logged. */
@@ -144,7 +147,21 @@ export function createInboundHandler(deps: InboundDeps) {
     if (!deps.connectors) return
     // The system writes the link, never the model.
     const { url } = await deps.connectors.connectLink({ userId: user.id, capabilities, triggerMessageId })
-    await reply(user, connectLinkText(capabilities, url))
+    const message = connectLinkMessage(capabilities)
+    try {
+      const ids = await channelFor(user.channel).sendLink(user.externalId, { ...message, url })
+      // History keeps the text only: the one-time URL never reaches the model's context.
+      const sentAt = new Date()
+      for (const id of ids) {
+        await repo.insertOutboundMessage({ userId: user.id, channel: user.channel, externalMessageId: id, body: message.text, sentAt })
+      }
+    } catch (err) {
+      if (err instanceof ChannelSendError && err.permanent) {
+        logger.warn({ userId: user.id, channel: user.channel, err }, 'connect link dropped')
+        return
+      }
+      throw err
+    }
   }
 
   const approvals = createApprovals({

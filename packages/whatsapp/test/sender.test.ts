@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ChannelSendError, type InboundMessage } from '@wa/core'
-import { FakeWhatsAppClient } from '../src/client.js'
+import { FakeWhatsAppClient, GraphApiError } from '../src/client.js'
 import { createWhatsAppChannel, OutsideServiceWindowError } from '../src/sender.js'
 
 const now = new Date('2026-09-24T12:00:00Z')
@@ -40,6 +40,24 @@ describe('WhatsApp channel', () => {
     const msg = { channel: 'whatsapp', id: 'wamid.IN', platformMessageId: 'wamid.IN', from: 'x', timestamp: 1, type: 'text' } satisfies InboundMessage
     ch.startTyping(msg)()
     expect(client.calls).toEqual([{ method: 'markRead', messageId: 'wamid.IN', typing: true }])
+  })
+
+  describe('link buttons', () => {
+    const link = { text: 'Connect your Google account.', url: 'https://x/start?s=T', label: 'Connect Google' }
+    const open = () => new Date(now.getTime() - 60_000)
+
+    it('sends a URL button, and falls back to text + URL when Meta rejects it', async () => {
+      const client = new FakeWhatsAppClient()
+      const ch = createWhatsAppChannel({ client, getLastInboundAt: async () => open(), now: () => now })
+      await ch.sendLink('256770000001', link)
+      expect(client.calls).toEqual([{ method: 'sendUrlButton', to: '256770000001', body: 'Connect your Google account.', label: 'Connect Google', url: 'https://x/start?s=T' }])
+
+      client.sendUrlButton = async () => {
+        throw new GraphApiError(400, 131009, 'Parameter value is not valid')
+      }
+      await ch.sendLink('256770000001', link)
+      expect(client.calls.at(-1)).toEqual({ method: 'sendText', to: '256770000001', body: 'Connect your Google account.\nhttps://x/start?s=T' })
+    })
   })
 
   describe('approval cards', () => {

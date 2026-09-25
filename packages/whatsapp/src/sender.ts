@@ -1,5 +1,5 @@
 import { approvalButtonId, ChannelSendError, type Channel, type InboundMessage } from '@wa/core'
-import { BUTTON_BODY_MAX, BUTTON_TITLE_MAX, type WhatsAppClient } from './client.js'
+import { BUTTON_BODY_MAX, BUTTON_TITLE_MAX, GraphApiError, type WhatsAppClient } from './client.js'
 import { splitMessage, toWhatsAppText } from './format.js'
 
 export const SERVICE_WINDOW_MS = 24 * 60 * 60_000
@@ -64,6 +64,19 @@ export function createWhatsAppChannel({
       const title = card.title.length > 200 ? `${card.title.slice(0, 199)}…` : card.title
       ids.push((await client.sendButtons(to, toWhatsAppText(`**${title}**: approve the message above?`), buttons)).messageId)
       return ids
+    },
+    async sendLink(to, link) {
+      await assertWindowOpen(to)
+      const body = toWhatsAppText(link.text)
+      if (body.length <= BUTTON_BODY_MAX) {
+        try {
+          return [(await client.sendUrlButton(to, body, link.label.slice(0, BUTTON_TITLE_MAX), link.url)).messageId]
+        } catch (err) {
+          // A rejected button (4xx) falls back to the plain link; transient errors are retried by the queue.
+          if (!(err instanceof GraphApiError && err.permanent)) throw err
+        }
+      }
+      return channel.sendText(to, `${link.text}\n${link.url}`)
     },
     // Reply buttons can't be removed on WhatsApp. A later tap on a decided card is a no-op.
     async closeApproval() {},

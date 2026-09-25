@@ -39,6 +39,16 @@ describe('CloudApiClient', () => {
     })
   })
 
+  it('sends a call-to-action URL button', async () => {
+    const f = fakeFetch([{ status: 200, body: { messages: [{ id: 'wamid.CTA' }] } }])
+    const client = new CloudApiClient({ ...base, fetch: f.impl })
+    await client.sendUrlButton('256770000001', 'Connect Google', 'Connect Google', 'https://x/start?s=T')
+    expect(JSON.parse(String(f.calls[0]!.init.body))).toMatchObject({
+      type: 'interactive',
+      interactive: { type: 'cta_url', body: { text: 'Connect Google' }, action: { name: 'cta_url', parameters: { display_text: 'Connect Google', url: 'https://x/start?s=T' } } },
+    })
+  })
+
   it('retries 5xx and 429, then succeeds', async () => {
     const f = fakeFetch([
       { status: 500, body: {} },
