@@ -2,7 +2,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { createLogger, defineTool, NeedsConnectionError, noServices, type AnyTool } from '@wa/core'
-import { buildMessages, REFUSAL_REPLY, runAgent, toolParam, type ActionLog, type CreateMessage, type CreateMessageParams } from '../src/loop.js'
+import { buildMessages, REFUSAL_REPLY, runAgent, toolParam, toStrictSchema, type ActionLog, type CreateMessage, type CreateMessageParams } from '../src/loop.js'
 
 type Msg = Anthropic.Beta.Messages.BetaMessage
 const logger = createLogger({ name: 'test', level: 'silent' })
@@ -266,20 +266,22 @@ describe('runAgent: connectors', () => {
 })
 
 describe('toolParam (strict tool schemas)', () => {
-  const FORBIDDEN = ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf']
+  // The documented strict-mode limits (numeric, string length, array length beyond minItems 0/1).
+  const FORBIDDEN = ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'maxItems']
   const keys = (node: unknown, out: string[] = []): string[] => {
     if (Array.isArray(node)) node.forEach((n) => keys(n, out))
-    else if (node && typeof node === 'object') for (const [k, v] of Object.entries(node)) (out.push(k), keys(v, out))
+    else if (node && typeof node === 'object')
+      for (const [k, v] of Object.entries(node)) (out.push(k === 'minItems' && typeof v === 'number' && v > 1 ? 'minItems>1' : k), keys(v, out))
     return out
   }
 
-  it('every real tool serialises without keywords the API rejects in strict mode (regression: 400 on integer bounds)', async () => {
+  it('every real tool serialises without keywords the API rejects in strict mode (regression: 400 on integer bounds, then on maxItems)', async () => {
     const { createTools } = await import('@wa/tools')
     const tools = createTools({ anthropic: {} as never, searchModel: 'x', google: true })
     expect(tools.length).toBeGreaterThanOrEqual(8)
     for (const tool of tools) {
       const param = toolParam(tool)
-      expect(keys(param.input_schema).filter((k) => FORBIDDEN.includes(k)), tool.name).toEqual([])
+      expect(keys(param.input_schema).filter((k) => FORBIDDEN.includes(k) || k === 'minItems>1'), tool.name).toEqual([])
       expect(param.strict).toBe(true)
     }
   })
@@ -295,6 +297,17 @@ describe('toolParam (strict tool schemas)', () => {
     }) as AnyTool
     const schema = toolParam(tool).input_schema as { properties: { n: { description: string } } }
     expect(schema.properties.n.description).toBe('Minutes (minimum 5, maximum 1440)')
+  })
+
+  it('moves array and string lengths too, keeping minItems 0 or 1', () => {
+    const schema = toStrictSchema(
+      z.toJSONSchema(z.object({ to: z.array(z.email()).min(1).max(10), cc: z.array(z.string()).min(2), s: z.string().max(250) })),
+    ) as { properties: Record<string, Record<string, unknown>> }
+    expect(schema.properties.to).toMatchObject({ minItems: 1, description: '(maxItems 10)' })
+    expect(schema.properties.to!.items).toMatchObject({ format: 'email' })
+    expect(schema.properties.cc).toMatchObject({ description: '(minItems 2)' })
+    expect(schema.properties.cc!.minItems).toBeUndefined()
+    expect(schema.properties.s).toMatchObject({ description: '(maxLength 250)' })
   })
 })
 

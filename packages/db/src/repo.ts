@@ -189,19 +189,17 @@ export function createRepo(db: Db) {
       return (await db.query.messages.findFirst({ where: eq(messages.id, id) })) ?? null
     },
 
-    /** Most recent successful low_write action whose undo window is still open. */
-    async latestUndoableAction(userId: string, now: Date) {
-      return (
-        (await db.query.actions.findFirst({
-          where: and(
-            eq(actions.userId, userId),
-            eq(actions.risk, 'low_write'),
-            eq(actions.status, 'succeeded'),
-            gt(actions.undoExpiresAt, now),
-          ),
-          orderBy: desc(actions.createdAt),
-        })) ?? null
-      )
+    /**
+     * The most recent request's successful low_write actions whose undo window is still
+     * open, newest first. One request can make several changes ("add these two events"),
+     * and "undo" means all of them.
+     */
+    async latestUndoableActions(userId: string, now: Date) {
+      const open = and(eq(actions.userId, userId), eq(actions.risk, 'low_write'), eq(actions.status, 'succeeded'), gt(actions.undoExpiresAt, now))
+      const latest = await db.query.actions.findFirst({ where: open, orderBy: desc(actions.createdAt) })
+      if (!latest) return []
+      if (!latest.runId) return [latest]
+      return db.query.actions.findMany({ where: and(open, eq(actions.runId, latest.runId)), orderBy: desc(actions.createdAt) })
     },
 
     // --- connectors ---

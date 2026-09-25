@@ -8,12 +8,13 @@
 export type Provider = 'google'
 
 /** What a tool needs, in terms a user understands. Mapped to OAuth scopes per provider. */
-export type Capability = 'calendar.read' | 'calendar.write' | 'gmail.read'
+export type Capability = 'calendar.read' | 'calendar.write' | 'gmail.read' | 'gmail.compose'
 
 export const CAPABILITIES: Record<Capability, { provider: Provider; product: string; label: string }> = {
   'calendar.read': { provider: 'google', product: 'Google Calendar', label: 'see your calendar events' },
-  'calendar.write': { provider: 'google', product: 'Google Calendar', label: 'add events to your calendar' },
+  'calendar.write': { provider: 'google', product: 'Google Calendar', label: 'add and remove events on your calendar' },
   'gmail.read': { provider: 'google', product: 'Gmail', label: 'read your email' },
+  'gmail.compose': { provider: 'google', product: 'Gmail', label: 'save email drafts for you to review' },
 }
 
 export type ConnectionProblem = 'not_connected' | 'missing_permission' | 'revoked'

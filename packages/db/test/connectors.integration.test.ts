@@ -54,17 +54,29 @@ describe.skipIf(!url)('connector repo (postgres)', () => {
     expect(await repo.getConnection(userId, 'google')).toBeNull()
   })
 
-  it('finds the latest undoable action only inside its window', async () => {
-    const msg = await repo.insertInboundMessage({ userId, channel: 'telegram', externalMessageId: `c${suffix}:1`, type: 'text', body: 'x', sentAt: new Date() })
-    const runId = await repo.createRun({ userId, triggerMessageId: msg.id, model: 'm' })
+  it('finds the latest request\'s undoable actions, only inside their window', async () => {
+    const run = async (n: number) => {
+      const msg = await repo.insertInboundMessage({ userId, channel: 'telegram', externalMessageId: `c${suffix}:${n}`, type: 'text', body: 'x', sentAt: new Date() })
+      return repo.createRun({ userId, triggerMessageId: msg.id, model: 'm' })
+    }
     const now = new Date()
-    const open = await repo.createAction({ userId, runId, tool: 'create_calendar_event', risk: 'low_write', status: 'running', input: { title: 'A' } })
-    await repo.updateAction(open, { status: 'succeeded', result: { ok: true }, undoExpiresAt: new Date(now.getTime() + 60_000) })
-    expect((await repo.latestUndoableAction(userId, now))?.id).toBe(open)
-    await repo.updateAction(open, { status: 'undone' })
-    expect(await repo.latestUndoableAction(userId, now)).toBeNull()
-    const expired = await repo.createAction({ userId, runId, tool: 'create_calendar_event', risk: 'low_write', status: 'running', input: {} })
-    await repo.updateAction(expired, { status: 'succeeded', undoExpiresAt: new Date(now.getTime() - 1) })
-    expect(await repo.latestUndoableAction(userId, now)).toBeNull()
+    const add = async (runId: string, undoExpiresAt: Date) => {
+      const id = await repo.createAction({ userId, runId, tool: 'create_calendar_event', risk: 'low_write', status: 'running', input: {} })
+      await repo.updateAction(id, { status: 'succeeded', result: { ok: true }, undoExpiresAt })
+      return id
+    }
+    const inWindow = new Date(now.getTime() + 60_000)
+    const older = await add(await run(1), inWindow)
+    const latestRun = await run(2)
+    const a = await add(latestRun, inWindow)
+    const b = await add(latestRun, inWindow)
+    expect((await repo.latestUndoableActions(userId, now)).map((x) => x.id)).toEqual([b, a])
+    await repo.updateAction(a, { status: 'undone' })
+    await repo.updateAction(b, { status: 'undone' })
+    // The earlier request becomes the latest undoable one.
+    expect((await repo.latestUndoableActions(userId, now)).map((x) => x.id)).toEqual([older])
+    await repo.updateAction(older, { status: 'undone' })
+    await add(await run(3), new Date(now.getTime() - 1))
+    expect(await repo.latestUndoableActions(userId, now)).toEqual([])
   })
 })

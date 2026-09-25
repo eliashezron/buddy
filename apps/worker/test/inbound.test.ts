@@ -94,9 +94,12 @@ function memoryRepo() {
       const m = messages.find((x) => x.id === id)
       return m ? ({ ...m, type: 'text', status: m.status ?? null, errorCodes: null, sentAt: new Date(), createdAt: new Date() } as never) : null
     },
-    async latestUndoableAction(userId, now) {
-      const open = actions.filter((a) => a.userId === userId && a.risk === 'low_write' && a.status === 'succeeded' && a.undoExpiresAt && a.undoExpiresAt > now)
-      return (open.sort((x, y) => y.createdAt.getTime() - x.createdAt.getTime())[0] as never) ?? null
+    async latestUndoableActions(userId, now) {
+      const open = actions
+        .filter((a) => a.userId === userId && a.risk === 'low_write' && a.status === 'succeeded' && a.undoExpiresAt && a.undoExpiresAt > now)
+        .sort((x, y) => y.createdAt.getTime() - x.createdAt.getTime())
+      const latest = open[0]
+      return (latest ? open.filter((a) => a.runId === latest.runId) : []) as never
     },
   }
   return { repo, users, messages, runs, actions }
@@ -376,7 +379,7 @@ describe('inbound handler: connectors', () => {
     expect(calls).toBe(1)
   })
 
-  it('undo: reverses the latest low_write action inside its 10-minute window, once', async () => {
+  it('undo: reverses every change from the latest request, then the one before, each once', async () => {
     const undone: unknown[] = []
     const addEvent = defineTool({
       name: 'create_calendar_event',
@@ -384,7 +387,7 @@ describe('inbound handler: connectors', () => {
       risk: 'low_write',
       input: z.object({ title: z.string() }),
       preview: ({ title }) => `Add "${title}"`,
-      execute: async ({ title }) => ({ ok: true, eventId: 'ev1', title }),
+      execute: async ({ title }) => ({ ok: true, eventId: `ev-${title}`, title }),
       undo: async (result) => void undone.push(result),
     })
     const undoTool = defineTool({
@@ -396,10 +399,16 @@ describe('inbound handler: connectors', () => {
       execute: async (_i, ctx) => ctx.services.undo.undoLatest(),
     })
     const script = [
-      toolUse('create_calendar_event', { title: 'Lunch with Kato' }),
+      toolUse('create_calendar_event', { title: 'Older' }),
       reply('Added.'),
+      // One request, two changes.
+      toolUse('create_calendar_event', { title: 'Lunch with Kato' }),
+      toolUse('create_calendar_event', { title: 'Gym' }),
+      reply('Added both.'),
       toolUse('undo_last_action', {}),
-      reply('Removed it.'),
+      reply('Removed both.'),
+      toolUse('undo_last_action', {}),
+      reply('Removed Older.'),
       toolUse('undo_last_action', {}),
       reply('Nothing to undo.'),
     ]
@@ -412,13 +421,25 @@ describe('inbound handler: connectors', () => {
       if (e?.kind === 'message') e.message.id = id
       return e!
     }
+    await t.handle(next('555000111:89'))
     await t.handle(next('555000111:90'))
-    expect(undone).toEqual([{ ok: true, eventId: 'ev1', title: 'Lunch with Kato' }])
-    const created = t.actions.find((a) => a.tool === 'create_calendar_event')!
-    expect(created.status).toBe('undone')
+    // Newest first; the earlier request's event is left alone.
+    expect(undone).toEqual([
+      { ok: true, eventId: 'ev-Gym', title: 'Gym' },
+      { ok: true, eventId: 'ev-Lunch with Kato', title: 'Lunch with Kato' },
+    ])
+    const status = (title: string) => t.actions.find((a) => (a.input as { title?: string }).title === title)!.status
+    expect([status('Older'), status('Lunch with Kato'), status('Gym')]).toEqual(['succeeded', 'undone', 'undone'])
+    const firstUndo = t.actions.find((a) => a.tool === 'undo_last_action')!
+    expect(firstUndo.result).toMatchObject({ undone: true, description: 'Add "Gym"; Add "Lunch with Kato"' })
 
+    // Undo again: the earlier request is next.
     await t.handle(next('555000111:91'))
-    expect(undone).toHaveLength(1)
+    expect(undone.at(-1)).toEqual({ ok: true, eventId: 'ev-Older', title: 'Older' })
+    expect(status('Older')).toBe('undone')
+
+    await t.handle(next('555000111:92'))
+    expect(undone).toHaveLength(3)
     const lastUndo = t.actions.filter((a) => a.tool === 'undo_last_action').at(-1)!
     expect(lastUndo.result).toMatchObject({ undone: false })
   })
