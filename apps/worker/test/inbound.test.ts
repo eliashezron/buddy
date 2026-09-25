@@ -350,8 +350,26 @@ describe('inbound handler: connectors', () => {
     const texts = t.tg.sent.map((c) => c.text)
     expect(texts).toHaveLength(2)
     expect(texts[1]).toContain('see your calendar events')
-    expect(texts[1]).toContain('https://api.example/oauth/google/start?s=TOKEN')
     expect(texts[1]).toContain('expires in 15 minutes')
+    // The link is a button that opens the browser, not text to copy.
+    expect(texts[1]).not.toContain('https://')
+    expect(t.tg.sent[1]!.buttons).toEqual([[{ text: 'Connect Google', url: 'https://api.example/oauth/google/start?s=TOKEN' }]])
+    // The one-time URL is never stored as history, so the model never sees it.
+    expect(t.messages.some((m) => m.body?.includes('s=TOKEN'))).toBe(false)
+  })
+
+  it('falls back to the plain link when Telegram rejects the button (e.g. a localhost URL)', async () => {
+    const { connectors } = fakeConnectors()
+    const script = [toolUse('calendar_list_events', { from: 'a', to: 'b' }), reply('A link is coming.')]
+    const t = setup(async () => script.shift()!, { connectors, tools: [calendarTool(() => false)] })
+    const send = t.tg.sendMessage.bind(t.tg)
+    t.tg.sendMessage = async (chatId, text, opts) => {
+      if (opts?.buttons?.[0]?.[0] && 'url' in opts.buttons[0][0]) throw new TelegramApiError(400, 'Bad Request: BUTTON_URL_INVALID')
+      return send(chatId, text, opts)
+    }
+    for (const e of fixtureEvents('telegram-text')) await t.handle(e)
+    expect(t.tg.sent.at(-1)!.text).toContain('https://api.example/oauth/google/start?s=TOKEN')
+    expect(t.tg.sent.at(-1)!.buttons).toBeUndefined()
   })
 
   it('after connecting: confirms, then re-runs the original request', async () => {
@@ -621,8 +639,9 @@ describe('inbound handler: approvals (outbound actions)', () => {
     const { t, executed, action } = await requestSend({ connected: () => false })
     expect(executed).toEqual([])
     expect(action.status).toBe('failed')
-    expect(t.tg.sent.some((m) => m.buttons)).toBe(false)
-    expect(t.tg.sent.at(-1)!.text).toContain('https://api.example/oauth/google/start?s=TOKEN')
+    // No approval card: the only button is the connect link.
+    expect(t.tg.sent.flatMap((m) => m.buttons?.flat() ?? []).some((b) => 'data' in b)).toBe(false)
+    expect(t.tg.sent.at(-1)!.buttons).toEqual([[{ text: 'Connect Google', url: 'https://api.example/oauth/google/start?s=TOKEN' }]])
   })
 
   it('WhatsApp: reply buttons carry the same payloads, and a button reply approves', async () => {

@@ -235,6 +235,32 @@ describe('Telegram approval cards', () => {
   })
 })
 
+describe('Telegram link buttons', () => {
+  const link = { text: '🔐 Connect your Google account.', url: 'https://api.example/oauth?s=T', label: 'Connect Google' }
+
+  it('sends the text with a button that opens the URL', async () => {
+    const client = new FakeTelegramClient()
+    expect(await createTelegramChannel({ client, botId: '9' }).sendLink('555', link)).toEqual(['9:555:1'])
+    expect(client.sent).toEqual([
+      { method: 'sendMessage', chatId: '555', text: '🔐 Connect your Google account.', html: true, buttons: [[{ text: 'Connect Google', url: 'https://api.example/oauth?s=T' }]] },
+    ])
+  })
+
+  it('falls back to text + URL on a 400, and rethrows anything else', async () => {
+    const client = new FakeTelegramClient()
+    const send = client.sendMessage.bind(client)
+    let fail: TelegramApiError | null = new TelegramApiError(400, 'Bad Request: BUTTON_URL_INVALID')
+    client.sendMessage = async (chatId, text, opts) => {
+      if (opts?.buttons && fail) throw fail
+      return send(chatId, text, opts)
+    }
+    await createTelegramChannel({ client, botId: '9' }).sendLink('555', link)
+    expect(client.sent.at(-1)!.text).toBe('🔐 Connect your Google account.\nhttps://api.example/oauth?s=T')
+    fail = new TelegramApiError(429, 'Too Many Requests')
+    await expect(createTelegramChannel({ client, botId: '9' }).sendLink('555', link)).rejects.toBe(fail)
+  })
+})
+
 describe('BotApiClient', () => {
   const token = '123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawQ'
   function fakeFetch(responses: { status: number; body: unknown }[]) {
@@ -262,8 +288,10 @@ describe('BotApiClient', () => {
       { status: 200, body: { ok: true, result: true } },
     ])
     const client = new BotApiClient({ token, logger, fetch: f.impl })
-    await client.sendMessage('555', 'Send?', { buttons: [[{ text: 'Send', data: 'approve:x' }]] })
-    expect(f.calls[0]!.body).toMatchObject({ reply_markup: { inline_keyboard: [[{ text: 'Send', callback_data: 'approve:x' }]] } })
+    await client.sendMessage('555', 'Send?', { buttons: [[{ text: 'Send', data: 'approve:x' }, { text: 'Open', url: 'https://x' }]] })
+    expect(f.calls[0]!.body).toMatchObject({
+      reply_markup: { inline_keyboard: [[{ text: 'Send', callback_data: 'approve:x' }, { text: 'Open', url: 'https://x' }]] },
+    })
     await client.getUpdates(0, 0)
     expect(f.calls[1]!.body).toMatchObject({ allowed_updates: ['message', 'callback_query'] })
     await client.setWebhook('https://x/telegram/webhook', 'secret')

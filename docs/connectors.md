@@ -10,7 +10,10 @@ User: "what's on my calendar tomorrow?"
   → agent calls calendar_list_events
   → no Google connection → tool raises NeedsConnectionError(calendar.read)
   → agent replies: "I've sent you a link to connect your calendar"
-  → worker (not the model) sends a one-time link:  <PUBLIC_BASE_URL>/oauth/google/start?s=…
+  → worker (not the model) sends a one-time link as a [Connect Google] button that opens
+    the browser:  <PUBLIC_BASE_URL>/oauth/google/start?s=…  (plain text if the platform
+    rejects the button, e.g. Telegram and a localhost URL). The URL is never stored as
+    history, so the model never sees it.
 User taps it
   → /oauth/google/start checks the link (unused, <15 min old) → 302 to Google
     asking only for calendar.events.readonly (+ openid email), with PKCE

@@ -11,6 +11,8 @@ export interface WhatsAppClient {
   markRead(messageId: string, opts?: { typing?: boolean }): Promise<void>
   /** Interactive reply buttons: body ≤ 1024 chars, up to 3 buttons, titles ≤ 20 chars, ids ≤ 256. */
   sendButtons(to: string, body: string, buttons: { id: string; title: string }[]): Promise<{ messageId: string }>
+  /** Call-to-action URL button: body ≤ 1024 chars, label ≤ 20 chars. */
+  sendUrlButton(to: string, body: string, label: string, url: string): Promise<{ messageId: string }>
 }
 
 export const BUTTON_BODY_MAX = 1024
@@ -87,6 +89,19 @@ export class CloudApiClient implements WhatsAppClient {
     return { messageId: parsed.data.messages[0]!.id }
   }
 
+  async sendUrlButton(to: string, body: string, label: string, url: string) {
+    const json = await this.post('/messages', {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'interactive',
+      interactive: { type: 'cta_url', body: { text: body }, action: { name: 'cta_url', parameters: { display_text: label, url } } },
+    })
+    const parsed = sendResponseSchema.safeParse(json)
+    if (!parsed.success) throw new GraphApiError(200, undefined, 'unexpected send response shape')
+    return { messageId: parsed.data.messages[0]!.id }
+  }
+
   async markRead(messageId: string, opts: { typing?: boolean } = {}) {
     const payload: Record<string, unknown> = { messaging_product: 'whatsapp', status: 'read', message_id: messageId }
     if (opts.typing) payload.typing_indicator = { type: 'text' }
@@ -130,6 +145,7 @@ export type RecordedCall =
   | { method: 'sendText'; to: string; body: string; replyToId?: string }
   | { method: 'markRead'; messageId: string; typing: boolean }
   | { method: 'sendButtons'; to: string; body: string; buttons: { id: string; title: string }[] }
+  | { method: 'sendUrlButton'; to: string; body: string; label: string; url: string }
 
 /** Records every outbound call. Use this in all tests and in `pnpm replay`; nothing hits Graph. */
 export class FakeWhatsAppClient implements WhatsAppClient {
@@ -149,6 +165,11 @@ export class FakeWhatsAppClient implements WhatsAppClient {
 
   async sendButtons(to: string, body: string, buttons: { id: string; title: string }[]) {
     this.calls.push({ method: 'sendButtons', to, body, buttons })
+    return { messageId: `wamid.FAKE_${++this.seq}` }
+  }
+
+  async sendUrlButton(to: string, body: string, label: string, url: string) {
+    this.calls.push({ method: 'sendUrlButton', to, body, label, url })
     return { messageId: `wamid.FAKE_${++this.seq}` }
   }
 

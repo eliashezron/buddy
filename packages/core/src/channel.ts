@@ -63,6 +63,19 @@ export interface Channel {
   sendApproval(to: string, card: ApprovalCard): Promise<string[]>
   /** After a button press: stop the client's spinner and close the card, where the platform allows it. */
   closeApproval(message: InboundMessage, outcome: string): Promise<void>
+  /**
+   * Sends `text` with a button that opens `url` in the browser. Falls back to the text
+   * followed by the bare URL if the platform rejects the button (e.g. a localhost URL).
+   */
+  sendLink(to: string, link: LinkButton): Promise<string[]>
+}
+
+export interface LinkButton {
+  /** Markdown shown above the button. Should not contain the URL. */
+  text: string
+  url: string
+  /** Button label, max 20 characters (WhatsApp's limit). */
+  label: string
 }
 
 export interface ApprovalCard {

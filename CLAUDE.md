@@ -1,7 +1,7 @@
 # Project: WhatsApp assistant
 
 A WhatsApp-first task assistant. Users talk to a WhatsApp Business number by text or
-voice note; the agent completes tasks (calendar, email, Notion, web lookups, later
+voice note; the agent completes tasks (calendar, email, draft documents on google drive, docs and sheets, Notion, web lookups, later
 payments) and reports back in the same chat. There is no mobile app.
 
 Read `docs/PRD.md` for scope and `docs/whatsapp-notes.md` for platform rules before

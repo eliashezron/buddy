@@ -59,6 +59,16 @@ export function createTelegramChannel({ client, botId, onTypingError = () => {} 
       ids.push(`${botId}:${chatId}:${(await client.sendMessage(chatId, title, { html: true, buttons })).messageId}`)
       return ids
     },
+    async sendLink(chatId, link) {
+      try {
+        const html = toTelegramHtml(link.text)
+        return [`${botId}:${chatId}:${(await client.sendMessage(chatId, html, { html: true, buttons: [[{ text: link.label, url: link.url }]] })).messageId}`]
+      } catch (err) {
+        // Telegram rejects some button URLs (localhost, for one) with a 400. The link still works as text.
+        if (!(err instanceof TelegramApiError && err.errorCode === 400)) throw err
+        return channel.sendText(chatId, `${link.text}\n${link.url}`)
+      }
+    },
     async closeApproval(message, outcome) {
       // Best effort: the decision is already recorded, and these only tidy the chat.
       if (message.callbackId) await client.answerCallbackQuery(message.callbackId, outcome).catch(() => {})

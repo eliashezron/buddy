@@ -5,8 +5,11 @@ import { z } from 'zod'
  * The only code allowed to call the Telegram Bot API. The bot token is part of
  * every URL, so URLs are never logged (the logger also redacts token-shaped strings).
  */
-/** One row of inline keyboard buttons; `data` comes back in the callback query (max 64 bytes). */
-export type InlineButton = { text: string; data: string }
+/**
+ * An inline keyboard button: `data` comes back in a callback query (max 64 bytes);
+ * `url` opens a link in the browser.
+ */
+export type InlineButton = { text: string; data: string } | { text: string; url: string }
 
 export interface SendMessageOptions {
   html?: boolean
@@ -78,7 +81,7 @@ export class BotApiClient implements TelegramClient {
       text,
       ...(opts.html ? { parse_mode: 'HTML' } : {}),
       ...(opts.buttons
-        ? { reply_markup: { inline_keyboard: opts.buttons.map((row) => row.map((b) => ({ text: b.text, callback_data: b.data }))) } }
+        ? { reply_markup: { inline_keyboard: opts.buttons.map((row) => row.map((b) => ('url' in b ? { text: b.text, url: b.url } : { text: b.text, callback_data: b.data }))) } }
         : {}),
       link_preview_options: { is_disabled: true },
     })
