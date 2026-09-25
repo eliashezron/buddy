@@ -12,7 +12,7 @@ export interface ServerDeps {
   verifyToken: string
   enqueue: (events: QueueEvent[]) => Promise<void>
   /** Set to accept Telegram webhooks (webhook mode only). */
-  telegramSecretToken?: string
+  telegram?: { secretToken: string; botId: string }
   /** Set to serve /oauth/google/* (Google connectors configured). */
   google?: GoogleConnectorDeps
 }
@@ -38,8 +38,8 @@ export function buildServer(deps: ServerDeps) {
   if (deps.google) {
     app.register(oauthRoutes, { google: deps.google, enqueue: deps.enqueue })
   }
-  if (deps.telegramSecretToken) {
-    app.register(telegramRoutes, { secretToken: deps.telegramSecretToken, enqueue: deps.enqueue })
+  if (deps.telegram) {
+    app.register(telegramRoutes, { ...deps.telegram, enqueue: deps.enqueue })
   }
 
   return app

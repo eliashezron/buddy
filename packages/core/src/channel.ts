@@ -10,7 +10,7 @@ export type ChannelName = (typeof CHANNELS)[number]
 /** One inbound message, normalised. JSON-serialisable: it goes on a queue. */
 export interface InboundMessage {
   channel: ChannelName
-  /** Unique within the channel; the dedup key (wamid, or `<chatId>:<message_id>` on Telegram). */
+  /** Unique within the channel; the dedup key (wamid, or `<botId>:<chatId>:<message_id>` on Telegram). */
   id: string
   /** The user's address on the channel (wa_id, Telegram private chat id). Replies go here. */
   from: string

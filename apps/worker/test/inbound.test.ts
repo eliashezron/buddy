@@ -20,7 +20,7 @@ function loadFixture(name: string) {
 /** Parses a WhatsApp or Telegram fixture; `rebase` moves timestamps to now (keeps the 24 h window open). */
 function fixtureEvents(name: string, rebase = true): ChannelEvent[] {
   const payload = loadFixture(name)
-  const events = 'update_id' in payload ? parseTelegramUpdate(payload).events : parseWebhook(payload).events
+  const events = 'update_id' in payload ? parseTelegramUpdate(payload, { botId: '1' }).events : parseWebhook(payload).events
   if (rebase) for (const e of events) if (e.kind === 'message') e.message.timestamp = Math.floor(Date.now() / 1000)
   return events
 }
@@ -132,7 +132,7 @@ function setup(createMessage: CreateMessage, opts: { connectors?: Connectors; to
         client: wa,
         getLastInboundAt: async (id) => mem.users.get(`whatsapp:${id}`)?.lastInboundAt ?? null,
       }),
-      telegram: createTelegramChannel({ client: tg }),
+      telegram: createTelegramChannel({ client: tg, botId: '1' }),
     },
     createMessage,
     model: 'claude-opus-5',
@@ -223,7 +223,7 @@ describe('inbound handler: Telegram', () => {
       { method: 'sendMessage', chatId: '555000111', text: '<b>1 USD</b> ≈ 3,700 UGX &lt;today&gt;', html: true },
     ])
     const out = t.messages.find((m) => m.direction === 'outbound')
-    expect(out).toMatchObject({ channel: 'telegram', externalMessageId: '555000111:1' })
+    expect(out).toMatchObject({ channel: 'telegram', externalMessageId: '1:555000111:1' })
   })
 
   it('never applies the WhatsApp service window: old Telegram messages still get replies', async () => {
@@ -250,7 +250,7 @@ describe('inbound handler: Telegram', () => {
     for (const e of [...fixtureEvents('telegram-start'), ...fixtureEvents('telegram-text')]) await t.handle(e)
     expect(seen.length).toBeGreaterThan(0)
     for (const content of seen) expect(typeof content === 'string' ? content.trim() : 'x').not.toBe('')
-    expect(t.messages.find((m) => m.externalMessageId === '555000111:40')?.body).toBeNull()
+    expect(t.messages.find((m) => m.externalMessageId === '1:555000111:40')?.body).toBeNull()
     expect(t.tg.sent).toHaveLength(2)
   })
 

@@ -15,7 +15,7 @@ import {
 import { createConnectLink, createGoogleOAuth, googleConnectionManager, googleCredentials } from '@wa/connectors'
 import { createDb, createRepo } from '@wa/db'
 import { createTools } from '@wa/tools'
-import { BotApiClient, createTelegramChannel } from '@wa/telegram'
+import { BotApiClient, botIdFromToken, createTelegramChannel } from '@wa/telegram'
 import { CloudApiClient, createWhatsAppChannel } from '@wa/whatsapp'
 import { createInboundHandler, type Connectors } from './inbound.js'
 
@@ -41,6 +41,7 @@ const channels: Partial<Record<ChannelName, Channel>> = {
 if (config.TELEGRAM_BOT_TOKEN) {
   channels.telegram = createTelegramChannel({
     client: new BotApiClient({ token: config.TELEGRAM_BOT_TOKEN, logger: logger.child({ component: 'telegram' }) }),
+    botId: botIdFromToken(config.TELEGRAM_BOT_TOKEN),
     onTypingError: (err) => logger.warn({ err }, 'telegram typing failed'),
   })
 }

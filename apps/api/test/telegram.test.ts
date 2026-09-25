@@ -22,7 +22,7 @@ function server(opts: { telegram: boolean }) {
     appSecret: 'wa',
     verifyToken: 'wa',
     enqueue: async (events) => void enqueued.push(events),
-    ...(opts.telegram ? { telegramSecretToken: SECRET } : {}),
+    ...(opts.telegram ? { telegram: { secretToken: SECRET, botId: '1' } } : {}),
   })
   return { app, enqueued }
 }
@@ -41,7 +41,7 @@ describe('POST /telegram/webhook', () => {
       payload: update('telegram-text'),
     })
     expect(res.statusCode).toBe(200)
-    expect(s.enqueued[0]?.[0]).toMatchObject({ kind: 'message', message: { channel: 'telegram', id: '555000111:41' } })
+    expect(s.enqueued[0]?.[0]).toMatchObject({ kind: 'message', message: { channel: 'telegram', id: '1:555000111:41' } })
   })
 
   it('rejects a missing or wrong secret without enqueueing', async () => {
@@ -84,6 +84,7 @@ describe('Telegram poller', () => {
     const done = new Promise<void>((r) => (resolveDone = r))
     const poller = startTelegramPoller({
       logger,
+      botId: '1',
       retryDelayMs: 1,
       client: {
         getWebhookInfo: async () => ({ url: '', pending_update_count: 0 }),
@@ -109,7 +110,7 @@ describe('Telegram poller', () => {
     await poller.stop()
     expect(deleted).toBe(true)
     expect(offsets).toEqual([0, 0, 900000006, 900000003])
-    expect(enqueued.map((e) => e[0]?.kind === 'message' && e[0].message.id)).toEqual(['555000111:41', '555000111:40'])
+    expect(enqueued.map((e) => e[0]?.kind === 'message' && e[0].message.id)).toEqual(['1:555000111:41', '1:555000111:40'])
   })
 })
 
@@ -119,6 +120,7 @@ describe('Telegram poller safety', () => {
     let polled = false
     const poller = startTelegramPoller({
       logger,
+      botId: '1',
       client: {
         getWebhookInfo: async () => ({ url: 'https://buddy-api.onrender.com/telegram/webhook', pending_update_count: 0 }),
         deleteWebhook: async () => void (deleted = true),
@@ -137,6 +139,7 @@ describe('Telegram poller safety', () => {
     const polled = new Promise<void>((r) => (resolvePolled = r))
     const poller = startTelegramPoller({
       logger,
+      botId: '1',
       takeover: true,
       client: {
         getWebhookInfo: async () => ({ url: 'https://buddy-api.onrender.com/telegram/webhook', pending_update_count: 0 }),

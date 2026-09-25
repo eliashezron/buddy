@@ -92,9 +92,10 @@ const [{ default: Anthropic }, core, db, tools, wa, tg, inbound] = await Promise
 ])
 const config = core.loadConfigOrExit(core.envSchema)
 const logger = core.createLogger({ name: 'replay', level: config.LOG_LEVEL })
+const tgBotId = config.TELEGRAM_BOT_TOKEN ? tg.botIdFromToken(config.TELEGRAM_BOT_TOKEN) : '0'
 
 if (!telegram && !verifySignature(Buffer.from(raw), signature, config.WHATSAPP_APP_SECRET)) throw new Error('signature mismatch')
-const { events, skipped } = telegram ? tg.parseTelegramUpdate(JSON.parse(raw)) : wa.parseWebhook(JSON.parse(raw))
+const { events, skipped } = telegram ? tg.parseTelegramUpdate(JSON.parse(raw), { botId: tgBotId }) : wa.parseWebhook(JSON.parse(raw))
 logger.info({ events: events.length, skipped }, 'parsed')
 
 const { db: database, close } = db.createDb(config.DATABASE_URL, { max: 2 })
@@ -106,7 +107,7 @@ const handle = inbound.createInboundHandler({
   repo,
   channels: {
     whatsapp: wa.createWhatsAppChannel({ client: fake, getLastInboundAt: (waId) => repo.getLastInboundAt('whatsapp', waId) }),
-    telegram: tg.createTelegramChannel({ client: fakeTg }),
+    telegram: tg.createTelegramChannel({ client: fakeTg, botId: tgBotId }),
   },
   createMessage: (params, opts) => anthropic.beta.messages.create(params, opts),
   model: config.AGENT_MODEL,

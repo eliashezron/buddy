@@ -40,7 +40,7 @@ export const messages = pgTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     direction: messageDirection('direction').notNull(),
     channel: channel('channel').notNull(),
-    /** Channel message id (wamid, or `<chatId>:<message_id>`). With `channel`, the idempotency key for at-least-once delivery. */
+    /** Channel message id (wamid, or `<botId>:<chatId>:<message_id>`). With `channel`, the idempotency key for at-least-once delivery. */
     externalMessageId: text('external_message_id').notNull(),
     type: text('type').notNull(),
     /** Nulled by the retention job after MESSAGE_RETENTION_DAYS. */

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { createLocalCipher, createLogger, envSchema, loadConfigOrExit, publicBaseUrl } from '@wa/core'
 import { createGoogleOAuth, type GoogleConnectorDeps } from '@wa/connectors'
 import { createDb, createRepo } from '@wa/db'
-import { BotApiClient } from '@wa/telegram'
+import { BotApiClient, botIdFromToken } from '@wa/telegram'
 import { createInboundQueue } from './queue.js'
 import { buildServer } from './server.js'
 import { registerTelegramWebhook, startTelegramPoller } from './telegram.js'
@@ -32,6 +32,8 @@ if (config.GOOGLE_CLIENT_ID && config.GOOGLE_CLIENT_SECRET && config.TOKEN_ENCRY
     logger: logger.child({ component: 'google' }),
   }
 }
+const telegramBotId = config.TELEGRAM_BOT_TOKEN ? botIdFromToken(config.TELEGRAM_BOT_TOKEN) : null
+
 const app = buildServer({
   logger,
   version,
@@ -39,8 +41,8 @@ const app = buildServer({
   verifyToken: config.WHATSAPP_VERIFY_TOKEN,
   enqueue: queue.enqueue,
   ...(google ? { google } : {}),
-  ...(config.TELEGRAM_BOT_TOKEN && config.TELEGRAM_MODE === 'webhook' && config.TELEGRAM_WEBHOOK_SECRET
-    ? { telegramSecretToken: config.TELEGRAM_WEBHOOK_SECRET }
+  ...(telegramBotId && config.TELEGRAM_MODE === 'webhook' && config.TELEGRAM_WEBHOOK_SECRET
+    ? { telegram: { secretToken: config.TELEGRAM_WEBHOOK_SECRET, botId: telegramBotId } }
     : {}),
 })
 
@@ -49,9 +51,10 @@ const telegram = config.TELEGRAM_BOT_TOKEN
   : null
 
 const poller =
-  telegram && config.TELEGRAM_MODE === 'polling'
+  telegram && telegramBotId && config.TELEGRAM_MODE === 'polling'
     ? startTelegramPoller({
         client: telegram,
+        botId: telegramBotId,
         enqueue: queue.enqueue,
         logger: logger.child({ component: 'telegram-poller' }),
         takeover: config.TELEGRAM_POLLING_TAKEOVER,
