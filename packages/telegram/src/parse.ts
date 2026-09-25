@@ -21,12 +21,26 @@ const MEDIA: [keyof TelegramMessage, string][] = [
   ['sticker', 'sticker'],
 ]
 
-function toInbound(m: TelegramMessage): InboundMessage {
+export interface TelegramParseOptions {
+  /** The receiving bot's id, from `botIdFromToken`. */
+  botId: string
+}
+
+/** The numeric bot id is the part of the token before the colon. */
+export function botIdFromToken(token: string): string {
+  const id = token.split(':')[0]
+  if (!id || !/^\d+$/.test(id)) throw new Error('malformed Telegram bot token')
+  return id
+}
+
+function toInbound(m: TelegramMessage, botId: string): InboundMessage {
   const chatId = String(m.chat.id)
+  // message_id is only unique within one bot's chat, and a private chat's id is the
+  // user's id for every bot, so the bot id is part of the key.
+  const key = (messageId: number) => `${botId}:${chatId}:${messageId}`
   const out: InboundMessage = {
     channel: 'telegram',
-    // message_id is only unique within a chat.
-    id: `${chatId}:${m.message_id}`,
+    id: key(m.message_id),
     from: chatId,
     timestamp: m.date,
     type: 'text',
@@ -34,7 +48,7 @@ function toInbound(m: TelegramMessage): InboundMessage {
   }
   const name = [m.from?.first_name, m.from?.last_name].filter(Boolean).join(' ')
   if (name) out.contactName = name
-  if (m.reply_to_message) out.replyToId = `${chatId}:${m.reply_to_message.message_id}`
+  if (m.reply_to_message) out.replyToId = key(m.reply_to_message.message_id)
   if (m.forward_origin || m.forward_date) out.forwarded = true
 
   if (m.text !== undefined) {
@@ -71,7 +85,7 @@ function toInbound(m: TelegramMessage): InboundMessage {
  * Parses one Telegram `Update` whose secret token has already been verified.
  * Only private chats are handled: the bot never reads groups or channels.
  */
-export function parseTelegramUpdate(json: unknown): TelegramParseResult {
+export function parseTelegramUpdate(json: unknown, opts: TelegramParseOptions): TelegramParseResult {
   const update = telegramUpdateSchema.safeParse(json)
   if (!update.success) throw new InvalidUpdateError('not a Telegram update')
   const { update_id: updateId, message, ...rest } = update.data
@@ -86,5 +100,5 @@ export function parseTelegramUpdate(json: unknown): TelegramParseResult {
   if (m.chat.type !== 'private') return { updateId, events: [], skipped: [{ field: 'message', reason: 'non-private chat' }] }
   if (m.from?.is_bot) return { updateId, events: [], skipped: [{ field: 'message', reason: 'sent by a bot' }] }
 
-  return { updateId, events: [{ kind: 'message', message: toInbound(m) }], skipped: [] }
+  return { updateId, events: [{ kind: 'message', message: toInbound(m, opts.botId) }], skipped: [] }
 }

@@ -1,15 +1,23 @@
 import { FAILURE_REPLY, isTransientModelError, runAgent, type ActionLog, type CreateMessage } from '@wa/agent'
 import {
+  CAPABILITIES,
   ChannelSendError,
+  noServices,
   type AnyTool,
+  type Capability,
   type Channel,
-  type ChannelEvent,
   type ChannelName,
+  type ConnectionEvent,
+  type ConnectionManager,
+  type CredentialProvider,
   type InboundMessage,
   type Logger,
+  type QueueEvent,
   type StatusUpdate,
+  type ToolServices,
+  type UndoService,
 } from '@wa/core'
-import type { Repo } from '@wa/db'
+import type { Repo, User } from '@wa/db'
 import { KeyedLock } from './lock.js'
 
 export type InboundRepo = Pick<
@@ -24,7 +32,17 @@ export type InboundRepo = Pick<
   | 'finishRun'
   | 'createAction'
   | 'updateAction'
+  | 'getUserById'
+  | 'getMessageById'
+  | 'latestUndoableAction'
 >
+
+/** Google (or other) connectors for one user. Absent when no connector is configured. */
+export interface Connectors {
+  forUser(userId: string): { credentials: CredentialProvider; connections: ConnectionManager }
+  /** One-time link asking for exactly these capabilities. */
+  connectLink(input: { userId: string; capabilities: Capability[]; triggerMessageId: string | null }): Promise<{ url: string }>
+}
 
 export interface InboundDeps {
   repo: InboundRepo
@@ -35,8 +53,10 @@ export interface InboundDeps {
   tools: AnyTool[]
   logger: Logger
   defaultTimezone: string
+  connectors?: Connectors
   historyLimit?: number
   historyWindowMs?: number
+  now?: () => Date
 }
 
 export interface JobInfo {
@@ -58,9 +78,26 @@ export function welcomeText(name?: string): string {
   return [
     `Hi${name ? ` ${name}` : ''}! I'm your task assistant.`,
     '',
-    'Ask me to look things up (prices, opening hours, news, places, how-tos) or send me a link to summarise. Calendar, email and Notion are coming soon.',
+    'Ask me to look things up (prices, opening hours, news, places, how-tos) or send me a link to summarise. ' +
+      "I can also check your calendar and email: I'll ask for access the first time you need it. Notion is coming soon.",
     '',
     'I only see the messages you send me here.',
+  ].join('\n')
+}
+
+const labels = (caps: Capability[]) => {
+  const l = [...new Set(caps)].map((c) => CAPABILITIES[c].label)
+  return l.length <= 1 ? (l[0] ?? '') : `${l.slice(0, -1).join(', ')} and ${l.at(-1)}`
+}
+const products = (caps: Capability[]) => [...new Set(caps.map((c) => CAPABILITIES[c].product))].join(' and ')
+
+export function connectLinkText(capabilities: Capability[], url: string): string {
+  return [
+    `🔐 To let me ${labels(capabilities)}, connect your Google account:`,
+    url,
+    '',
+    'The link works once and expires in 15 minutes. I only get the access listed on the Google screen, ' +
+      'and you can remove it any time: just say "disconnect Google".',
   ].join('\n')
 }
 
@@ -73,7 +110,9 @@ function bodyOf(m: InboundMessage): string | null {
 
 export function createInboundHandler(deps: InboundDeps) {
   const { repo, logger } = deps
+  const now = deps.now ?? (() => new Date())
   const perUser = new KeyedLock()
+  const toolsByName = new Map(deps.tools.map((t) => [t.name, t]))
 
   function channelFor(name: ChannelName): Channel {
     const channel = deps.channels[name]
@@ -98,10 +137,117 @@ export function createInboundHandler(deps: InboundDeps) {
     }
   }
 
+  function servicesFor(user: User): ToolServices {
+    const base = deps.connectors?.forUser(user.id) ?? noServices()
+    const services: ToolServices = { credentials: base.credentials, connections: base.connections, undo: undoFor(user) }
+    return services
+
+    function undoFor(u: User): UndoService {
+      return {
+        async undoLatest() {
+          const action = await repo.latestUndoableAction(u.id, now())
+          if (!action) return { undone: false, reason: 'There is nothing I changed in the last 10 minutes to undo.' }
+          const tool = toolsByName.get(action.tool)
+          if (!tool?.undo) return { undone: false, reason: `The last change (${action.tool}) can't be undone automatically.` }
+          await tool.undo(action.result, {
+            userId: u.id,
+            runId: action.runId ?? 'undo',
+            actionId: action.id,
+            timezone: u.timezone,
+            now: now(),
+            logger: logger.child({ tool: tool.name, actionId: action.id, undo: true }),
+            services,
+          })
+          await repo.updateAction(action.id, { status: 'undone' })
+          return { undone: true, description: tool.preview(action.input) }
+        },
+      }
+    }
+  }
+
+  /** Runs the agent on `text` for `user` and replies; sends a connect link if a tool needed one. */
+  async function runAndReply(opts: {
+    user: User
+    triggerMessageId: string
+    text: string
+    forwarded?: boolean
+    typingFor?: InboundMessage
+    log: Logger
+    job: JobInfo
+  }) {
+    const { user, log, job } = opts
+    const history = await repo.recentConversation(user.id, {
+      limit: deps.historyLimit ?? 12,
+      since: new Date(now().getTime() - (deps.historyWindowMs ?? 6 * 60 * 60_000)),
+      excludeId: opts.triggerMessageId,
+    })
+    const runId = await repo.createRun({ userId: user.id, triggerMessageId: opts.triggerMessageId, model: deps.model })
+    const actions: ActionLog = {
+      create: (a) => repo.createAction({ ...a, userId: user.id, runId }),
+      update: (id, patch) => repo.updateAction(id, patch),
+    }
+
+    // Read receipt / typing indicator while the agent works. Best-effort.
+    const stopTyping = opts.typingFor ? channelFor(user.channel).startTyping(opts.typingFor) : () => {}
+    const startedAt = Date.now()
+    let result
+    try {
+      result = await runAgent({
+        createMessage: deps.createMessage,
+        model: deps.model,
+        tools: deps.tools,
+        actions,
+        logger: log.child({ runId }),
+        runId,
+        user: { id: user.id, timezone: user.timezone, ...(user.displayName ? { name: user.displayName } : {}) },
+        channel: user.channel,
+        services: servicesFor(user),
+        history: history.map((h) => ({ role: h.direction === 'inbound' ? 'user' : 'assistant', text: h.body })),
+        message: { text: opts.text, ...(opts.forwarded ? { forwarded: true } : {}) },
+      })
+    } catch (err) {
+      stopTyping()
+      await repo.finishRun(runId, { status: 'failed', inputTokens: 0, outputTokens: 0, error: String(err) })
+      const retry = !job.finalAttempt && isTransientModelError(err)
+      log.error({ err, runId, retry }, 'agent run failed')
+      if (retry) throw err
+      await reply(user, FAILURE_REPLY)
+      return
+    }
+    stopTyping()
+
+    log.info(
+      {
+        runId,
+        status: result.status,
+        tools: result.toolCalls.map((t) => `${t.name}:${t.outcome}`),
+        connectionRequests: result.connectionRequests,
+        durationMs: Date.now() - startedAt,
+        ...result.usage,
+      },
+      'agent run finished',
+    )
+    try {
+      await reply(user, result.reply)
+      if (result.connectionRequests.length && deps.connectors) {
+        // The system writes the link, never the model.
+        const { url } = await deps.connectors.connectLink({
+          userId: user.id,
+          capabilities: result.connectionRequests,
+          triggerMessageId: opts.triggerMessageId,
+        })
+        await reply(user, connectLinkText(result.connectionRequests, url))
+      }
+    } catch (err) {
+      await repo.finishRun(runId, { ...result.usage, status: 'failed', error: 'reply send failed' })
+      throw err
+    }
+    await repo.finishRun(runId, { ...result.usage, status: result.status })
+  }
+
   async function handleMessage(m: InboundMessage, job: JobInfo) {
     // platformMessageId, not id: Telegram ids embed the chat id, which is the user's Telegram id.
     const log = logger.child({ channel: m.channel, msgId: m.platformMessageId, type: m.type })
-    const channel = channelFor(m.channel)
     const user = await repo.upsertUserOnInbound({
       channel: m.channel,
       externalId: m.from,
@@ -140,62 +286,31 @@ export function createInboundHandler(deps: InboundDeps) {
       return
     }
 
-    const history = await repo.recentConversation(user.id, {
-      limit: deps.historyLimit ?? 12,
-      since: new Date(Date.now() - (deps.historyWindowMs ?? 6 * 60 * 60_000)),
-      excludeId: stored.id,
-    })
-    const runId = await repo.createRun({ userId: user.id, triggerMessageId: stored.id, model: deps.model })
-    const actions: ActionLog = {
-      create: (a) => repo.createAction({ ...a, userId: user.id, runId }),
-      update: (id, patch) => repo.updateAction(id, patch),
-    }
+    await runAndReply({ user, triggerMessageId: stored.id, text, forwarded: m.forwarded ?? false, typingFor: m, log, job })
+  }
 
-    // Read receipt / typing indicator while the agent works. Best-effort.
-    const stopTyping = channel.startTyping(m)
-    const startedAt = Date.now()
-    let result
-    try {
-      result = await runAgent({
-        createMessage: deps.createMessage,
-        model: deps.model,
-        tools: deps.tools,
-        actions,
-        logger: log.child({ runId }),
-        runId,
-        user: { id: user.id, timezone: user.timezone, ...(user.displayName ? { name: user.displayName } : {}) },
-        channel: m.channel,
-        history: history.map((h) => ({ role: h.direction === 'inbound' ? 'user' : 'assistant', text: h.body })),
-        message: { text, ...(m.forwarded ? { forwarded: true } : {}) },
-      })
-    } catch (err) {
-      stopTyping()
-      await repo.finishRun(runId, { status: 'failed', inputTokens: 0, outputTokens: 0, error: String(err) })
-      const retry = !job.finalAttempt && isTransientModelError(err)
-      log.error({ err, runId, retry }, 'agent run failed')
-      if (retry) throw err
-      await reply(user, FAILURE_REPLY)
+  /** The user finished (or abandoned) connecting an account: confirm, then finish what they asked. */
+  async function handleConnection(e: ConnectionEvent, job: JobInfo) {
+    const user = await repo.getUserById(e.userId)
+    if (!user) return
+    const log = logger.child({ channel: user.channel, connection: e.outcome })
+    if (e.outcome === 'denied') {
+      await reply(user, "No problem, I haven't connected anything. You can ask again whenever you like.")
       return
     }
-    stopTyping()
-
-    log.info(
-      {
-        runId,
-        status: result.status,
-        tools: result.toolCalls.map((t) => `${t.name}:${t.outcome}`),
-        durationMs: Date.now() - startedAt,
-        ...result.usage,
-      },
-      'agent run finished',
-    )
-    try {
-      await reply(user, result.reply)
-    } catch (err) {
-      await repo.finishRun(runId, { ...result.usage, status: 'failed', error: 'reply send failed' })
-      throw err
+    if (e.outcome === 'failed') {
+      await reply(user, 'Something went wrong while connecting your Google account. Please ask me again to get a new link.')
+      return
     }
-    await repo.finishRun(runId, { ...result.usage, status: result.status })
+    const granted = e.requested.filter((c) => !e.missing.includes(c))
+    const lines = [`✅ Connected ${products(granted.length ? granted : e.requested)}${e.account ? ` (${e.account})` : ''}.`]
+    if (e.missing.length) lines.push(`You didn't allow me to ${labels(e.missing)}, so I can't do that part.`)
+    await reply(user, lines.join('\n'))
+
+    const trigger = e.triggerMessageId ? await repo.getMessageById(e.triggerMessageId) : null
+    if (!trigger?.body || e.missing.length) return
+    log.info('resuming request after connection')
+    await runAndReply({ user, triggerMessageId: trigger.id, text: trigger.body, log, job })
   }
 
   async function handleStatus(s: StatusUpdate) {
@@ -209,8 +324,9 @@ export function createInboundHandler(deps: InboundDeps) {
     else logger.debug({ channel: s.channel, msgId: s.id, status: s.status, applied }, 'status update')
   }
 
-  return async function handle(event: ChannelEvent, job: JobInfo = { finalAttempt: true }) {
+  return async function handle(event: QueueEvent, job: JobInfo = { finalAttempt: true }) {
     if (event.kind === 'status') return handleStatus(event.status)
+    if (event.kind === 'connection') return perUser.run(`user:${event.userId}`, () => handleConnection(event, job))
     // One conversation at a time per user, so quick follow-ups see earlier replies.
     const { channel, from } = event.message
     return perUser.run(`${channel}:${from}`, () => handleMessage(event.message, job))

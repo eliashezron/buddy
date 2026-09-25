@@ -4,6 +4,7 @@ import { InvalidUpdateError, parseTelegramUpdate, verifySecretToken, type BotApi
 
 export interface TelegramRouteOptions {
   secretToken: string
+  botId: string
   enqueue: (events: ChannelEvent[]) => Promise<void>
 }
 
@@ -16,7 +17,7 @@ export const telegramRoutes: FastifyPluginAsync<TelegramRouteOptions> = async (a
     }
     let events: ChannelEvent[]
     try {
-      const result = parseTelegramUpdate(req.body)
+      const result = parseTelegramUpdate(req.body, { botId: opts.botId })
       events = result.events
       if (result.skipped.length) req.log.info({ skipped: result.skipped }, 'telegram update skipped')
     } catch (err) {
@@ -62,6 +63,7 @@ export async function registerTelegramWebhook(deps: {
  */
 export function startTelegramPoller(deps: {
   client: PollingClient
+  botId: string
   enqueue: (events: ChannelEvent[]) => Promise<void>
   logger: Logger
   timeoutSec?: number
@@ -94,7 +96,7 @@ export function startTelegramPoller(deps: {
         for (const update of updates) {
           const updateId = (update as { update_id?: unknown }).update_id
           try {
-            const { events, skipped } = parseTelegramUpdate(update)
+            const { events, skipped } = parseTelegramUpdate(update, { botId: deps.botId })
             if (skipped.length) deps.logger.info({ skipped }, 'telegram update skipped')
             if (events.length) await deps.enqueue(events)
           } catch (err) {

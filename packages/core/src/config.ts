@@ -37,14 +37,34 @@ const baseEnvSchema = z.object({
 
   // Public https base URL of the api. In webhook mode the api registers
   // <url>/telegram/webhook with Telegram on boot. Render sets RENDER_EXTERNAL_URL itself.
-  PUBLIC_BASE_URL: z.url({ protocol: /^https$/ }).optional(),
+  PUBLIC_BASE_URL: z
+    .url()
+    .refine((u) => u.startsWith('https://') || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(u), 'must be https (or http://localhost for local development)')
+    .optional(),
   RENDER_EXTERNAL_URL: z.url().optional(),
+
+  // Google connectors (Calendar, Gmail). Optional: without a client id the tools are off.
+  GOOGLE_CLIENT_ID: z.string().trim().min(1).optional(),
+  GOOGLE_CLIENT_SECRET: z.string().trim().min(1).optional(),
+  // 32 random bytes, base64 (openssl rand -base64 32). Encrypts OAuth tokens at rest.
+  TOKEN_ENCRYPTION_KEY: z
+    .string()
+    .refine((k) => Buffer.from(k, 'base64').length === 32, 'must be 32 bytes, base64 (openssl rand -base64 32)')
+    .optional(),
 
   DEFAULT_TIMEZONE: z.string().default('Africa/Kampala'),
   MESSAGE_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
 })
 
 export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
+  if (env.GOOGLE_CLIENT_ID) {
+    for (const key of ['GOOGLE_CLIENT_SECRET', 'TOKEN_ENCRYPTION_KEY'] as const) {
+      if (!env[key]) ctx.addIssue({ code: 'custom', path: [key], message: 'required when GOOGLE_CLIENT_ID is set' })
+    }
+    if (!env.PUBLIC_BASE_URL && !env.RENDER_EXTERNAL_URL) {
+      ctx.addIssue({ code: 'custom', path: ['PUBLIC_BASE_URL'], message: 'required when GOOGLE_CLIENT_ID is set (OAuth redirect and connect links)' })
+    }
+  }
   if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_MODE === 'webhook' && !env.TELEGRAM_WEBHOOK_SECRET) {
     ctx.addIssue({
       code: 'custom',
@@ -110,4 +130,9 @@ export function loadConfigOrExit<S extends z.ZodObject>(schema: S, env: Env = pr
     }
     throw err
   }
+}
+
+/** Public base URL of the api: explicit PUBLIC_BASE_URL, else Render's own. No trailing slash. */
+export function publicBaseUrl(config: Pick<Config, 'PUBLIC_BASE_URL' | 'RENDER_EXTERNAL_URL'>): string | undefined {
+  return (config.PUBLIC_BASE_URL ?? config.RENDER_EXTERNAL_URL)?.replace(/\/$/, '')
 }

@@ -1,8 +1,8 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { createLogger, defineTool, type AnyTool } from '@wa/core'
-import { buildMessages, REFUSAL_REPLY, runAgent, type ActionLog, type CreateMessage, type CreateMessageParams } from '../src/loop.js'
+import { createLogger, defineTool, NeedsConnectionError, noServices, type AnyTool } from '@wa/core'
+import { buildMessages, REFUSAL_REPLY, runAgent, toolParam, type ActionLog, type CreateMessage, type CreateMessageParams } from '../src/loop.js'
 
 type Msg = Anthropic.Beta.Messages.BetaMessage
 const logger = createLogger({ name: 'test', level: 'silent' })
@@ -83,6 +83,7 @@ const base = {
   runId: 'run_1',
   user: { id: 'user_1', timezone: 'Africa/Kampala', name: 'Elias' },
   channel: 'whatsapp' as const,
+  services: noServices(),
   history: [],
   now: new Date('2026-09-24T09:00:00Z'),
 }
@@ -182,6 +183,118 @@ describe('runAgent', () => {
     const content = String(requests[0]!.messages[0]!.content)
     expect(content).toMatch(/^The user forwarded this message:\n<forwarded_content>/)
     expect(content.match(/<\/forwarded_content>/g)).toHaveLength(1)
+  })
+})
+
+describe('runAgent: connectors', () => {
+  const calendar = (events: string[]) =>
+    defineTool({
+      name: 'calendar_list_events',
+      description: 'calendar',
+      risk: 'read',
+      input: z.object({ from: z.string(), to: z.string() }),
+      preview: () => '',
+      async execute(_i, ctx) {
+        await ctx.services.credentials.accessToken(['calendar.read'])
+        events.push('execute:calendar')
+        return { ok: true }
+      },
+    }) as AnyTool
+
+  it('turns a missing permission into a connection request, never a link from the model', async () => {
+    const { log, events, rows } = recordingActions()
+    const { createMessage, requests } = scripted([
+      message('tool_use', [toolUse('t1', 'calendar_list_events', { from: 'a', to: 'b' })]),
+      message('end_turn', [text("I've sent you a link to connect Google Calendar.")]),
+    ])
+    const out = await runAgent({ ...base, createMessage, tools: [calendar(events)], actions: log, message: { text: "what's on tomorrow?" } })
+
+    expect(out.connectionRequests).toEqual(['calendar.read'])
+    expect(out.toolCalls).toEqual([expect.objectContaining({ name: 'calendar_list_events', outcome: 'needs_connection' })])
+    expect(rows.get('act_1')).toMatchObject({ status: 'failed', error: 'needs_connection:not_connected' })
+    const toolResult = (requests[1]!.messages.at(-1)!.content as { content: string; is_error?: boolean }[])[0]!
+    expect(toolResult.is_error).toBe(true)
+    expect(JSON.parse(toolResult.content)).toMatchObject({ error: 'not_connected', product: 'Google Calendar' })
+    expect(toolResult.content).toContain('Do not write any link')
+    expect(toolResult.content).not.toMatch(/https?:\/\//)
+  })
+
+  it('passes per-user services to tools', async () => {
+    const { log, events } = recordingActions()
+    const services = { ...noServices(), credentials: { accessToken: async () => 'tok' } }
+    const { createMessage } = scripted([
+      message('tool_use', [toolUse('t1', 'calendar_list_events', { from: 'a', to: 'b' })]),
+      message('end_turn', [text('You have 2 meetings.')]),
+    ])
+    const out = await runAgent({ ...base, services, createMessage, tools: [calendar(events)], actions: log, message: { text: 'x' } })
+    expect(events).toContain('execute:calendar')
+    expect(out.connectionRequests).toEqual([])
+  })
+
+  it('opens a 10-minute undo window only for low_write tools that can undo', async () => {
+    const updates: { status: string; undoExpiresAt?: Date }[] = []
+    const actions = {
+      create: async () => 'act_1',
+      update: async (_id: string, patch: { status: string; undoExpiresAt?: Date }) => void updates.push(patch),
+    }
+    const mk = (name: string, withUndo: boolean) =>
+      defineTool({
+        name,
+        description: name,
+        risk: 'low_write',
+        input: z.object({}),
+        preview: () => '',
+        execute: async () => ({ ok: true }),
+        ...(withUndo ? { undo: async () => {} } : {}),
+      }) as AnyTool
+    const { createMessage } = scripted([
+      message('tool_use', [toolUse('t1', 'with_undo', {}), toolUse('t2', 'without_undo', {})]),
+      message('end_turn', [text('done')]),
+    ])
+    await runAgent({ ...base, createMessage, tools: [mk('with_undo', true), mk('without_undo', false)], actions, message: { text: 'x' } })
+    expect(updates.filter((u) => u.undoExpiresAt)).toHaveLength(1)
+    const window = updates.find((u) => u.undoExpiresAt)!.undoExpiresAt!.getTime() - Date.now()
+    expect(window).toBeGreaterThan(9 * 60_000)
+    expect(window).toBeLessThanOrEqual(10 * 60_000)
+  })
+
+  it('NeedsConnectionError keeps the capabilities it was raised with', () => {
+    const err = new NeedsConnectionError(['gmail.read'], 'revoked')
+    expect(err.capabilities).toEqual(['gmail.read'])
+    expect(err.problem).toBe('revoked')
+  })
+})
+
+describe('toolParam (strict tool schemas)', () => {
+  const FORBIDDEN = ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf']
+  const keys = (node: unknown, out: string[] = []): string[] => {
+    if (Array.isArray(node)) node.forEach((n) => keys(n, out))
+    else if (node && typeof node === 'object') for (const [k, v] of Object.entries(node)) (out.push(k), keys(v, out))
+    return out
+  }
+
+  it('every real tool serialises without keywords the API rejects in strict mode (regression: 400 on integer bounds)', async () => {
+    const { createTools } = await import('@wa/tools')
+    const tools = createTools({ anthropic: {} as never, searchModel: 'x', google: true })
+    expect(tools.length).toBeGreaterThanOrEqual(8)
+    for (const tool of tools) {
+      const param = toolParam(tool)
+      expect(keys(param.input_schema).filter((k) => FORBIDDEN.includes(k)), tool.name).toEqual([])
+      expect(param.strict).toBe(true)
+    }
+  })
+
+  it('keeps the range visible to the model in the description', () => {
+    const tool = defineTool({
+      name: 'x',
+      description: 'x',
+      risk: 'read',
+      input: z.object({ n: z.number().int().min(5).max(1440).describe('Minutes') }),
+      preview: () => '',
+      execute: async () => ({}),
+    }) as AnyTool
+    const schema = toolParam(tool).input_schema as { properties: { n: { description: string } } }
+    expect(schema.properties.n.description).toBe('Minutes (minimum 5, maximum 1440)')
   })
 })
 

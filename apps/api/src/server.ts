@@ -1,5 +1,7 @@
 import Fastify, { LogController } from 'fastify'
-import type { ChannelEvent, Logger } from '@wa/core'
+import type { Logger, QueueEvent } from '@wa/core'
+import type { GoogleConnectorDeps } from '@wa/connectors'
+import { oauthRoutes } from './oauth.js'
 import { telegramRoutes } from './telegram.js'
 import { webhookRoutes } from './webhook.js'
 
@@ -8,9 +10,11 @@ export interface ServerDeps {
   version: string
   appSecret: string
   verifyToken: string
-  enqueue: (events: ChannelEvent[]) => Promise<void>
+  enqueue: (events: QueueEvent[]) => Promise<void>
   /** Set to accept Telegram webhooks (webhook mode only). */
-  telegramSecretToken?: string
+  telegram?: { secretToken: string; botId: string }
+  /** Set to serve /oauth/google/* (Google connectors configured). */
+  google?: GoogleConnectorDeps
 }
 
 export function buildServer(deps: ServerDeps) {
@@ -31,8 +35,11 @@ export function buildServer(deps: ServerDeps) {
   app.get('/health', async () => ({ ok: true, version: deps.version }))
 
   app.register(webhookRoutes, { appSecret: deps.appSecret, verifyToken: deps.verifyToken, enqueue: deps.enqueue })
-  if (deps.telegramSecretToken) {
-    app.register(telegramRoutes, { secretToken: deps.telegramSecretToken, enqueue: deps.enqueue })
+  if (deps.google) {
+    app.register(oauthRoutes, { google: deps.google, enqueue: deps.enqueue })
+  }
+  if (deps.telegram) {
+    app.register(telegramRoutes, { ...deps.telegram, enqueue: deps.enqueue })
   }
 
   return app

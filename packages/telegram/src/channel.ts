@@ -7,24 +7,26 @@ const TYPING_REFRESH_MS = 4_500
 
 export interface TelegramChannelDeps {
   client: TelegramClient
+  /** The bot's id, from `botIdFromToken`. Part of every message id, as in `parseTelegramUpdate`. */
+  botId: string
   onTypingError?: (err: unknown) => void
 }
 
 /** Telegram as a `Channel`. No service window: a bot may reply any time the user has started it. */
-export function createTelegramChannel({ client, onTypingError = () => {} }: TelegramChannelDeps): Channel {
+export function createTelegramChannel({ client, botId, onTypingError = () => {} }: TelegramChannelDeps): Channel {
   return {
     name: 'telegram',
     async sendText(chatId, markdown) {
-      // Returned ids are `<chatId>:<message_id>`, matching inbound ids (message_id is per chat).
+      // Returned ids are `<botId>:<chatId>:<message_id>`, matching inbound ids.
       const ids: string[] = []
       // Split the Markdown before converting, so no chunk cuts through an HTML tag.
       for (const chunk of splitText(markdown, MAX_TEXT_LENGTH)) {
         try {
-          ids.push(`${chatId}:${(await client.sendMessage(chatId, toTelegramHtml(chunk), { html: true })).messageId}`)
+          ids.push(`${botId}:${chatId}:${(await client.sendMessage(chatId, toTelegramHtml(chunk), { html: true })).messageId}`)
         } catch (err) {
           const badMarkup = err instanceof TelegramApiError && err.errorCode === 400 && /parse entities/i.test(err.description)
           if (!badMarkup) throw err
-          ids.push(`${chatId}:${(await client.sendMessage(chatId, toPlainText(chunk))).messageId}`)
+          ids.push(`${botId}:${chatId}:${(await client.sendMessage(chatId, toPlainText(chunk))).messageId}`)
         }
       }
       return ids

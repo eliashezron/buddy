@@ -5,7 +5,7 @@ import { createLogger, type InboundMessage } from '@wa/core'
 import { createTelegramChannel } from '../src/channel.js'
 import { BotApiClient, FakeTelegramClient, TelegramApiError } from '../src/client.js'
 import { toPlainText, toTelegramHtml } from '../src/format.js'
-import { InvalidUpdateError, parseTelegramUpdate } from '../src/parse.js'
+import { botIdFromToken, InvalidUpdateError, parseTelegramUpdate as parseWithBot } from '../src/parse.js'
 import { verifySecretToken } from '../src/secret.js'
 
 const FIXTURES = path.resolve(import.meta.dirname, '../../../fixtures')
@@ -17,13 +17,15 @@ const telegramFixtures = readdirSync(FIXTURES)
   .filter((f) => f.startsWith('telegram-'))
   .map((f) => f.replace(/\.json$/, ''))
 const logger = createLogger({ name: 'test', level: 'silent' })
+const BOT_ID = '7000000001'
+const parseTelegramUpdate = (json: unknown) => parseWithBot(json, { botId: BOT_ID })
 
 describe('parseTelegramUpdate', () => {
   it.each(telegramFixtures)('parses fixture %s', (name) => {
     expect(() => parseTelegramUpdate(fixture(name))).not.toThrow()
   })
 
-  it('normalises a private text message with a chat-scoped id', () => {
+  it('normalises a private text message with a bot- and chat-scoped id', () => {
     expect(parseTelegramUpdate(fixture('telegram-text'))).toEqual({
       updateId: 900000001,
       skipped: [],
@@ -32,7 +34,7 @@ describe('parseTelegramUpdate', () => {
           kind: 'message',
           message: {
             channel: 'telegram',
-            id: '555000111:41',
+            id: '7000000001:555000111:41',
             from: '555000111',
             timestamp: 1790000500,
             type: 'text',
@@ -43,6 +45,18 @@ describe('parseTelegramUpdate', () => {
         },
       ],
     })
+  })
+
+  it('keys the same chat and message_id differently per bot', () => {
+    // A private chat's id is the user's id for every bot, and message_id restarts per bot.
+    const a = parseWithBot(fixture('telegram-text'), { botId: '1' }).events[0]
+    const b = parseWithBot(fixture('telegram-text'), { botId: '2' }).events[0]
+    expect(a?.kind === 'message' && b?.kind === 'message' && a.message.id !== b.message.id).toBe(true)
+  })
+
+  it('takes the bot id from the token', () => {
+    expect(botIdFromToken('7000000001:AAH-secret')).toBe('7000000001')
+    expect(() => botIdFromToken('not-a-token')).toThrow()
   })
 
   it('parses bot commands, including /cmd@BotName and arguments', () => {
@@ -115,30 +129,30 @@ describe('Telegram channel', () => {
   afterEach(() => vi.useRealTimers())
   const msg = { channel: 'telegram', id: '1:2', from: '1', timestamp: 1, type: 'text', platformMessageId: '2' } satisfies InboundMessage
 
-  it('sends HTML and returns chat-scoped ids', async () => {
+  it('sends HTML and returns bot- and chat-scoped ids', async () => {
     const client = new FakeTelegramClient()
-    const ch = createTelegramChannel({ client })
-    expect(await ch.sendText('555', '**hi**')).toEqual(['555:1'])
+    const ch = createTelegramChannel({ client, botId: '9' })
+    expect(await ch.sendText('555', '**hi**')).toEqual(['9:555:1'])
     expect(client.sent).toEqual([{ method: 'sendMessage', chatId: '555', text: '<b>hi</b>', html: true }])
   })
 
   it('splits long replies into several messages', async () => {
     const client = new FakeTelegramClient()
-    const ids = await createTelegramChannel({ client }).sendText('555', `${'a'.repeat(3000)}\n\n${'b'.repeat(3000)}`)
-    expect(ids).toEqual(['555:1', '555:2'])
+    const ids = await createTelegramChannel({ client, botId: '9' }).sendText('555', `${'a'.repeat(3000)}\n\n${'b'.repeat(3000)}`)
+    expect(ids).toEqual(['9:555:1', '9:555:2'])
   })
 
   it('falls back to plain text when Telegram rejects the markup', async () => {
     const client = new FakeTelegramClient()
     client.failNextHtml = true
-    await createTelegramChannel({ client }).sendText('555', '**hi**')
+    await createTelegramChannel({ client, botId: '9' }).sendText('555', '**hi**')
     expect(client.sent).toEqual([{ method: 'sendMessage', chatId: '555', text: 'hi', html: false }])
   })
 
   it('keeps "typing…" alive until stopped', async () => {
     vi.useFakeTimers()
     const client = new FakeTelegramClient()
-    const stop = createTelegramChannel({ client }).startTyping(msg)
+    const stop = createTelegramChannel({ client, botId: '9' }).startTyping(msg)
     await vi.advanceTimersByTimeAsync(10_000)
     stop()
     await vi.advanceTimersByTimeAsync(10_000)

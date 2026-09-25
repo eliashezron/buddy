@@ -1,12 +1,23 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { Queue, Worker } from 'bullmq'
 import { Redis } from 'ioredis'
-import { createLogger, envSchema, loadConfigOrExit, QUEUES, type Channel, type ChannelEvent, type ChannelName } from '@wa/core'
+import {
+  createLocalCipher,
+  createLogger,
+  envSchema,
+  loadConfigOrExit,
+  publicBaseUrl,
+  QUEUES,
+  type Channel,
+  type ChannelName,
+  type QueueEvent,
+} from '@wa/core'
+import { createConnectLink, createGoogleOAuth, googleConnectionManager, googleCredentials } from '@wa/connectors'
 import { createDb, createRepo } from '@wa/db'
 import { createTools } from '@wa/tools'
-import { BotApiClient, createTelegramChannel } from '@wa/telegram'
+import { BotApiClient, botIdFromToken, createTelegramChannel } from '@wa/telegram'
 import { CloudApiClient, createWhatsAppChannel } from '@wa/whatsapp'
-import { createInboundHandler } from './inbound.js'
+import { createInboundHandler, type Connectors } from './inbound.js'
 
 const config = loadConfigOrExit(envSchema)
 const logger = createLogger({ name: 'worker', level: config.LOG_LEVEL })
@@ -30,8 +41,34 @@ const channels: Partial<Record<ChannelName, Channel>> = {
 if (config.TELEGRAM_BOT_TOKEN) {
   channels.telegram = createTelegramChannel({
     client: new BotApiClient({ token: config.TELEGRAM_BOT_TOKEN, logger: logger.child({ component: 'telegram' }) }),
+    botId: botIdFromToken(config.TELEGRAM_BOT_TOKEN),
     onTypingError: (err) => logger.warn({ err }, 'telegram typing failed'),
   })
+}
+
+// Google connectors (Calendar, Gmail): only when configured. Config validation guarantees
+// the secret, encryption key and public URL exist whenever the client id does.
+let connectors: Connectors | undefined
+const baseUrl = publicBaseUrl(config)
+if (config.GOOGLE_CLIENT_ID && config.GOOGLE_CLIENT_SECRET && config.TOKEN_ENCRYPTION_KEY && baseUrl) {
+  const googleDeps = {
+    repo,
+    // Local key. CLAUDE.md requires a KMS-backed cipher before production (docs/connectors.md).
+    cipher: createLocalCipher(config.TOKEN_ENCRYPTION_KEY),
+    oauth: createGoogleOAuth({
+      clientId: config.GOOGLE_CLIENT_ID,
+      clientSecret: config.GOOGLE_CLIENT_SECRET,
+      redirectUri: `${baseUrl}/oauth/google/callback`,
+    }),
+    logger: logger.child({ component: 'google' }),
+  }
+  connectors = {
+    forUser: (userId) => ({
+      credentials: googleCredentials(googleDeps, userId),
+      connections: googleConnectionManager(googleDeps, userId),
+    }),
+    connectLink: (input) => createConnectLink({ ...googleDeps, baseUrl }, input),
+  }
 }
 
 const handle = createInboundHandler({
@@ -39,15 +76,16 @@ const handle = createInboundHandler({
   channels,
   createMessage: (params, opts) => anthropic.beta.messages.create(params, opts),
   model: config.AGENT_MODEL,
-  tools: createTools({ anthropic, searchModel: config.SEARCH_MODEL }),
+  tools: createTools({ anthropic, searchModel: config.SEARCH_MODEL, google: Boolean(connectors) }),
   logger,
   defaultTimezone: config.DEFAULT_TIMEZONE,
+  ...(connectors ? { connectors } : {}),
 })
 
 // BullMQ workers need maxRetriesPerRequest: null (blocking commands).
 const connection = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null })
 
-const inbound = new Worker<ChannelEvent>(
+const inbound = new Worker<QueueEvent>(
   QUEUES.inbound,
   async (job) => {
     const finalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1)
@@ -72,7 +110,7 @@ const maintenance = new Worker(
 )
 maintenance.on('error', (err) => logger.error({ err }, 'maintenance worker error'))
 
-logger.info({ queues: [QUEUES.inbound, QUEUES.maintenance], channels: Object.keys(channels), model: config.AGENT_MODEL }, 'worker started')
+logger.info({ queues: [QUEUES.inbound, QUEUES.maintenance], channels: Object.keys(channels), google: Boolean(connectors), model: config.AGENT_MODEL }, 'worker started')
 
 /** Stay under the usual SIGTERM→SIGKILL window of hosting platforms (often 30 s). */
 const SHUTDOWN_GRACE_MS = 15_000

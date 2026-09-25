@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createLogger } from '@wa/core'
-import type { ChannelEvent } from '@wa/core'
+import type { ChannelEvent, QueueEvent } from '@wa/core'
 import { signBody } from '@wa/whatsapp'
 import { buildServer } from '../src/server.js'
 import { jobIdFor } from '../src/queue.js'
@@ -18,7 +18,7 @@ function fixtureBody(name: string): string {
 }
 
 describe('api', () => {
-  let enqueued: ChannelEvent[][]
+  let enqueued: QueueEvent[][]
   let app: ReturnType<typeof buildServer>
   let failEnqueue = false
 

@@ -4,10 +4,10 @@ import Anthropic from '@anthropic-ai/sdk'
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { FAILURE_REPLY, type CreateMessage } from '@wa/agent'
-import { createLogger, defineTool, type ChannelEvent, type ChannelName } from '@wa/core'
+import { createLogger, defineTool, NeedsConnectionError, type Capability, type ChannelEvent, type ChannelName, type ConnectionEvent } from '@wa/core'
 import { createTelegramChannel, FakeTelegramClient, parseTelegramUpdate, TelegramApiError } from '@wa/telegram'
 import { createWhatsAppChannel, FakeWhatsAppClient, parseWebhook } from '@wa/whatsapp'
-import { createInboundHandler, UNSUPPORTED_REPLIES, welcomeText, type InboundRepo } from '../src/inbound.js'
+import { createInboundHandler, UNSUPPORTED_REPLIES, welcomeText, type Connectors, type InboundRepo } from '../src/inbound.js'
 
 const logger = createLogger({ name: 'test', level: 'silent' })
 
@@ -20,7 +20,7 @@ function loadFixture(name: string) {
 /** Parses a WhatsApp or Telegram fixture; `rebase` moves timestamps to now (keeps the 24 h window open). */
 function fixtureEvents(name: string, rebase = true): ChannelEvent[] {
   const payload = loadFixture(name)
-  const events = 'update_id' in payload ? parseTelegramUpdate(payload).events : parseWebhook(payload).events
+  const events = 'update_id' in payload ? parseTelegramUpdate(payload, { botId: '1' }).events : parseWebhook(payload).events
   if (rebase) for (const e of events) if (e.kind === 'message') e.message.timestamp = Math.floor(Date.now() / 1000)
   return events
 }
@@ -31,6 +31,10 @@ function memoryRepo() {
   const users = new Map<string, U>()
   const messages: { id: string; userId: string; channel: string; externalMessageId: string; direction: string; body: string | null; status?: string }[] = []
   const runs = new Map<string, { status: string; triggerMessageId: string }>()
+  const actions: {
+    id: string; userId: string; runId: string; tool: string; risk: string; status: string
+    input: unknown; result: unknown; undoExpiresAt: Date | null; createdAt: Date
+  }[] = []
   let seq = 0
   const key = (channel: string, id: string) => `${channel}:${id}`
   const repo: InboundRepo = {
@@ -74,12 +78,28 @@ function memoryRepo() {
     async finishRun(id, patch) {
       runs.get(id)!.status = patch.status
     },
-    async createAction() {
-      return `act_${++seq}`
+    async createAction(a) {
+      const id = `act_${++seq}`
+      actions.push({ id, userId: a.userId, runId: a.runId, tool: a.tool, risk: a.risk, status: a.status, input: a.input, result: null, undoExpiresAt: null, createdAt: new Date(Date.now() + seq) })
+      return id
     },
-    async updateAction() {},
+    async updateAction(id, patch) {
+      const a = actions.find((x) => x.id === id)
+      if (a) Object.assign(a, patch)
+    },
+    async getUserById(id) {
+      return [...users.values()].find((u) => u.id === id) ?? null
+    },
+    async getMessageById(id) {
+      const m = messages.find((x) => x.id === id)
+      return m ? ({ ...m, type: 'text', status: m.status ?? null, errorCodes: null, sentAt: new Date(), createdAt: new Date() } as never) : null
+    },
+    async latestUndoableAction(userId, now) {
+      const open = actions.filter((a) => a.userId === userId && a.risk === 'low_write' && a.status === 'succeeded' && a.undoExpiresAt && a.undoExpiresAt > now)
+      return (open.sort((x, y) => y.createdAt.getTime() - x.createdAt.getTime())[0] as never) ?? null
+    },
   }
-  return { repo, users, messages, runs }
+  return { repo, users, messages, runs, actions }
 }
 
 const reply = (text: string) =>
@@ -93,7 +113,7 @@ const reply = (text: string) =>
     usage: { input_tokens: 1, output_tokens: 1 },
   }) as unknown as Anthropic.Beta.Messages.BetaMessage
 
-function setup(createMessage: CreateMessage) {
+function setup(createMessage: CreateMessage, opts: { connectors?: Connectors; tools?: ReturnType<typeof defineTool>[] } = {}) {
   const mem = memoryRepo()
   const wa = new FakeWhatsAppClient()
   const tg = new FakeTelegramClient()
@@ -112,13 +132,14 @@ function setup(createMessage: CreateMessage) {
         client: wa,
         getLastInboundAt: async (id) => mem.users.get(`whatsapp:${id}`)?.lastInboundAt ?? null,
       }),
-      telegram: createTelegramChannel({ client: tg }),
+      telegram: createTelegramChannel({ client: tg, botId: '1' }),
     },
     createMessage,
     model: 'claude-opus-5',
-    tools: [noop],
+    tools: (opts.tools ?? [noop]) as never,
     logger,
     defaultTimezone: 'Africa/Kampala',
+    ...(opts.connectors ? { connectors: opts.connectors } : {}),
   })
   return { ...mem, wa, tg, handle }
 }
@@ -202,7 +223,7 @@ describe('inbound handler: Telegram', () => {
       { method: 'sendMessage', chatId: '555000111', text: '<b>1 USD</b> ≈ 3,700 UGX &lt;today&gt;', html: true },
     ])
     const out = t.messages.find((m) => m.direction === 'outbound')
-    expect(out).toMatchObject({ channel: 'telegram', externalMessageId: '555000111:1' })
+    expect(out).toMatchObject({ channel: 'telegram', externalMessageId: '1:555000111:1' })
   })
 
   it('never applies the WhatsApp service window: old Telegram messages still get replies', async () => {
@@ -229,7 +250,7 @@ describe('inbound handler: Telegram', () => {
     for (const e of [...fixtureEvents('telegram-start'), ...fixtureEvents('telegram-text')]) await t.handle(e)
     expect(seen.length).toBeGreaterThan(0)
     for (const content of seen) expect(typeof content === 'string' ? content.trim() : 'x').not.toBe('')
-    expect(t.messages.find((m) => m.externalMessageId === '555000111:40')?.body).toBeNull()
+    expect(t.messages.find((m) => m.externalMessageId === '1:555000111:40')?.body).toBeNull()
     expect(t.tg.sent).toHaveLength(2)
   })
 
@@ -256,5 +277,149 @@ describe('inbound handler: Telegram', () => {
     const t = setup(async () => reply('ok'))
     for (const e of [...fixtureEvents('telegram-text'), ...fixtureEvents('book-meeting')]) await t.handle(e)
     expect([...t.users.values()].map((u) => u.channel).sort()).toEqual(['telegram', 'whatsapp'])
+  })
+})
+
+describe('inbound handler: connectors', () => {
+  const toolUse = (name: string, input: unknown) =>
+    ({
+      id: 'm',
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-opus-5',
+      content: [{ type: 'tool_use', id: 't1', name, input }],
+      stop_reason: 'tool_use',
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }) as unknown as Anthropic.Beta.Messages.BetaMessage
+
+  function calendarTool(connected: () => boolean) {
+    return defineTool({
+      name: 'calendar_list_events',
+      description: 'calendar',
+      risk: 'read',
+      input: z.object({ from: z.string(), to: z.string() }),
+      preview: () => '',
+      async execute() {
+        if (!connected()) throw new NeedsConnectionError(['calendar.read'], 'not_connected')
+        return { ok: true, events: [{ title: 'Standup' }] }
+      },
+    })
+  }
+
+  function fakeConnectors() {
+    const links: { userId: string; capabilities: Capability[]; triggerMessageId: string | null }[] = []
+    const connectors: Connectors = {
+      forUser: () => ({ credentials: { accessToken: async () => 'tok' }, connections: { list: async () => [], disconnect: async () => false } }),
+      connectLink: async (input) => (links.push(input), { url: 'https://api.example/oauth/google/start?s=TOKEN' }),
+    }
+    return { connectors, links }
+  }
+
+  it('sends a system-written connect link after the reply when a tool needs access', async () => {
+    const { connectors, links } = fakeConnectors()
+    const script = [toolUse('calendar_list_events', { from: 'a', to: 'b' }), reply("I've sent you a secure link to connect your calendar.")]
+    const t = setup(async () => script.shift()!, { connectors, tools: [calendarTool(() => false)] })
+    for (const e of fixtureEvents('telegram-text')) await t.handle(e)
+
+    expect(links).toEqual([{ userId: expect.any(String), capabilities: ['calendar.read'], triggerMessageId: expect.any(String) }])
+    const texts = t.tg.sent.map((c) => c.text)
+    expect(texts).toHaveLength(2)
+    expect(texts[1]).toContain('see your calendar events')
+    expect(texts[1]).toContain('https://api.example/oauth/google/start?s=TOKEN')
+    expect(texts[1]).toContain('expires in 15 minutes')
+  })
+
+  it('after connecting: confirms, then re-runs the original request', async () => {
+    const { connectors } = fakeConnectors()
+    let isConnected = false
+    const script = [
+      toolUse('calendar_list_events', { from: 'a', to: 'b' }),
+      reply('Link coming.'),
+      toolUse('calendar_list_events', { from: 'a', to: 'b' }),
+      reply('Tomorrow you have Standup at 9.'),
+    ]
+    const t = setup(async () => script.shift()!, { connectors, tools: [calendarTool(() => isConnected)] })
+    const [event] = fixtureEvents('telegram-text')
+    await t.handle(event!)
+    const user = [...t.users.values()][0]!
+    const trigger = t.messages.find((m) => m.direction === 'inbound')!
+
+    isConnected = true
+    const connected: ConnectionEvent = {
+      kind: 'connection',
+      id: 'h1',
+      outcome: 'connected',
+      userId: user.id,
+      triggerMessageId: trigger.id,
+      requested: ['calendar.read'],
+      missing: [],
+      account: 'elias@example.com',
+    }
+    await t.handle(connected)
+    const texts = t.tg.sent.map((c) => c.text)
+    expect(texts.at(-2)).toBe('✅ Connected Google Calendar (elias@example.com).')
+    expect(texts.at(-1)).toBe('Tomorrow you have Standup at 9.')
+  })
+
+  it('says so when the user declines or unticks a permission, without re-running', async () => {
+    const { connectors } = fakeConnectors()
+    let calls = 0
+    const t = setup(async () => (calls++, reply('x')), { connectors })
+    for (const e of fixtureEvents('telegram-text')) await t.handle(e)
+    const user = [...t.users.values()][0]!
+    const base = { kind: 'connection' as const, id: 'h', userId: user.id, triggerMessageId: null, account: null }
+    await t.handle({ ...base, outcome: 'denied', requested: ['gmail.read'], missing: [] })
+    await t.handle({ ...base, id: 'h2', outcome: 'connected', requested: ['calendar.read', 'gmail.read'], missing: ['gmail.read'] })
+    const texts = t.tg.sent.map((c) => c.text)
+    expect(texts).toContain("No problem, I haven&#39;t connected anything. You can ask again whenever you like.".replace('&#39;', "'"))
+    expect(texts.at(-1)).toContain("You didn't allow me to read your email")
+    expect(calls).toBe(1)
+  })
+
+  it('undo: reverses the latest low_write action inside its 10-minute window, once', async () => {
+    const undone: unknown[] = []
+    const addEvent = defineTool({
+      name: 'create_calendar_event',
+      description: 'add',
+      risk: 'low_write',
+      input: z.object({ title: z.string() }),
+      preview: ({ title }) => `Add "${title}"`,
+      execute: async ({ title }) => ({ ok: true, eventId: 'ev1', title }),
+      undo: async (result) => void undone.push(result),
+    })
+    const undoTool = defineTool({
+      name: 'undo_last_action',
+      description: 'undo',
+      risk: 'low_write',
+      input: z.object({}),
+      preview: () => 'undo',
+      execute: async (_i, ctx) => ctx.services.undo.undoLatest(),
+    })
+    const script = [
+      toolUse('create_calendar_event', { title: 'Lunch with Kato' }),
+      reply('Added.'),
+      toolUse('undo_last_action', {}),
+      reply('Removed it.'),
+      toolUse('undo_last_action', {}),
+      reply('Nothing to undo.'),
+    ]
+    const t = setup(async () => script.shift()!, { tools: [addEvent, undoTool] })
+    const [first] = fixtureEvents('telegram-text')
+    await t.handle(first!)
+    // Any new message: ids differ.
+    const next = (id: string) => {
+      const [e] = fixtureEvents('telegram-text')
+      if (e?.kind === 'message') e.message.id = id
+      return e!
+    }
+    await t.handle(next('555000111:90'))
+    expect(undone).toEqual([{ ok: true, eventId: 'ev1', title: 'Lunch with Kato' }])
+    const created = t.actions.find((a) => a.tool === 'create_calendar_event')!
+    expect(created.status).toBe('undone')
+
+    await t.handle(next('555000111:91'))
+    expect(undone).toHaveLength(1)
+    const lastUndo = t.actions.filter((a) => a.tool === 'undo_last_action').at(-1)!
+    expect(lastUndo.result).toMatchObject({ undone: false })
   })
 })

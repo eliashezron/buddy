@@ -59,7 +59,7 @@ Telegram only accepts HTTPS on ports 443, 80, 88 or 8443.
 | Topic | Telegram | WhatsApp, for comparison |
 | --- | --- | --- |
 | Reply window | None: a bot can reply any time after the user starts it | 24 h service window, templates outside it |
-| Message id | `message_id` is per chat; we store `<chatId>:<message_id>` | `wamid` is globally unique |
+| Message id | `message_id` is per chat and per bot, and a private chat id is the user id for every bot; we store `<botId>:<chatId>:<message_id>` | `wamid` is globally unique |
 | Dedup | Job id and a DB unique key on `(channel, external_message_id)` | Same |
 | Typing | `sendChatAction typing` lasts ~5 s, refreshed every 4.5 s until the reply | One `typing_indicator` call with the read receipt |
 | Formatting | HTML parse mode (`b`, `i`, `s`, `code`, `a`); all other text escaped; plain-text fallback if Telegram rejects the markup | `*bold*`, `_italic_`, `~strike~` |
