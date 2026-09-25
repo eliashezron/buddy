@@ -12,12 +12,16 @@ export const IDENTITY_SCOPES = ['openid', 'email']
 const CALENDAR_READ = 'https://www.googleapis.com/auth/calendar.events.readonly'
 const CALENDAR_WRITE = 'https://www.googleapis.com/auth/calendar.events'
 const GMAIL_READ = 'https://www.googleapis.com/auth/gmail.readonly'
+// Google has no drafts-only scope: gmail.compose also allows sending. Sending stays gated
+// by the `outbound` policy (approval required), not by the scope.
+const GMAIL_COMPOSE = 'https://www.googleapis.com/auth/gmail.compose'
 
 /** Narrowest scope that grants each capability (PRD: request the narrowest scopes possible). */
 export const CAPABILITY_SCOPE: Record<Capability, string> = {
   'calendar.read': CALENDAR_READ,
   'calendar.write': CALENDAR_WRITE,
   'gmail.read': GMAIL_READ,
+  'gmail.compose': GMAIL_COMPOSE,
 }
 
 /** Scopes that also satisfy a capability (calendar write access includes reading events). */
@@ -25,6 +29,7 @@ const SATISFIED_BY: Record<Capability, string[]> = {
   'calendar.read': [CALENDAR_READ, CALENDAR_WRITE],
   'calendar.write': [CALENDAR_WRITE],
   'gmail.read': [GMAIL_READ],
+  'gmail.compose': [GMAIL_COMPOSE],
 }
 
 export function grants(scopes: readonly string[], capability: Capability): boolean {

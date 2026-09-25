@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createLogger, NeedsConnectionError, noServices, type ToolContext } from '@wa/core'
-import { calendarListEvents, createCalendarEvent, extractEmailText, gmailRead, gmailSearch } from '../src/index.js'
+import {
+  buildRawEmail,
+  calendarListEvents,
+  createCalendarEvent,
+  deleteCalendarEvent,
+  extractEmailText,
+  gmailCreateDraft,
+  gmailRead,
+  gmailSearch,
+} from '../src/index.js'
 
 type Handler = (url: URL, init: RequestInit) => { status: number; json?: unknown }
 function stubGoogle(handler: Handler) {
@@ -83,6 +92,104 @@ describe('create_calendar_event', () => {
   it('treats an already-deleted event as undone', async () => {
     stubGoogle(() => ({ status: 410, json: { error: { message: 'Resource has been deleted' } } }))
     await expect(createCalendarEvent.undo!({ ok: true, eventId: 'gone', title: 'x', when: '', timezone: '', undoableForMinutes: 10 }, ctx())).resolves.toBeUndefined()
+  })
+})
+
+describe('delete_calendar_event', () => {
+  const own = { id: 'ev1', summary: 'Focus time', start: { dateTime: '2026-09-25T11:00:00Z' }, end: { dateTime: '2026-09-25T13:00:00Z' }, organizer: { self: true } }
+
+  it('deletes an own event without notifications, and undo restores the same event', async () => {
+    const calls = stubGoogle((_url, init) => (init.method === 'DELETE' ? { status: 204 } : { status: 200, json: own }))
+    const out = await deleteCalendarEvent.execute({ eventId: 'ev1' }, ctx())
+    expect(out).toMatchObject({ ok: true, eventId: 'ev1', title: 'Focus time', when: 'Fri 25 Sept, 14:00–16:00', undoableForMinutes: 10 })
+    expect(calls.map((c) => c.init.method ?? 'GET')).toEqual(['GET', 'DELETE'])
+    expect(calls[1]!.url.searchParams.get('sendUpdates')).toBe('none')
+
+    await deleteCalendarEvent.undo!(out, ctx())
+    expect(calls[2]!.init.method).toBe('PATCH')
+    expect(calls[2]!.url.pathname).toBe('/calendar/v3/calendars/primary/events/ev1')
+    expect(calls[2]!.url.searchParams.get('sendUpdates')).toBe('none')
+    expect(JSON.parse(String(calls[2]!.init.body))).toEqual({ status: 'confirmed' })
+  })
+
+  it('refuses events with other guests or organised by someone else (deleting would notify them)', async () => {
+    for (const event of [
+      { ...own, attendees: [{ self: true }, { email: 'kato@example.com' }] },
+      { ...own, organizer: { self: false }, attendees: [{ self: true }] },
+    ]) {
+      const calls = stubGoogle(() => ({ status: 200, json: event }))
+      const out = await deleteCalendarEvent.execute({ eventId: 'ev1' }, ctx())
+      expect(out).toMatchObject({ ok: false, error: expect.stringMatching(/other guests/) })
+      expect(calls.some((c) => c.init.method === 'DELETE')).toBe(false)
+    }
+  })
+
+  it('allows an own event whose only other attendee is a room', async () => {
+    const calls = stubGoogle((_url, init) => (init.method === 'DELETE' ? { status: 204 } : { status: 200, json: { ...own, attendees: [{ self: true }, { resource: true }] } }))
+    expect(await deleteCalendarEvent.execute({ eventId: 'ev1' }, ctx())).toMatchObject({ ok: true })
+    expect(calls[1]!.init.method).toBe('DELETE')
+  })
+
+  it('reports a missing or already-cancelled event without deleting', async () => {
+    for (const r of [{ status: 404, json: { error: { message: 'Not Found' } } }, { status: 200, json: { ...own, status: 'cancelled' } }]) {
+      const calls = stubGoogle(() => r)
+      expect(await deleteCalendarEvent.execute({ eventId: 'ev1' }, ctx())).toMatchObject({ ok: false, error: expect.stringMatching(/not found/) })
+      expect(calls).toHaveLength(1)
+    }
+  })
+
+  it('needs calendar write access', async () => {
+    await expect(deleteCalendarEvent.execute({ eventId: 'ev1' }, ctx(false))).rejects.toMatchObject({ capabilities: ['calendar.write'] })
+  })
+})
+
+describe('gmail_create_draft', () => {
+  const decodeRaw = (raw: string) => Buffer.from(raw, 'base64url').toString('utf8')
+
+  it('saves a draft (never sends) and undo deletes it', async () => {
+    const calls = stubGoogle((_url, init) => (init.method === 'DELETE' ? { status: 204 } : { status: 200, json: { id: 'r-1', message: { id: 'msg1' } } }))
+    const out = await gmailCreateDraft.execute({ to: ['kato@example.com'], subject: 'Running late', body: 'Hi Kato,\nRunning 10 minutes late.' }, ctx())
+    expect(out).toMatchObject({ ok: true, draftId: 'r-1', sent: false, openInGmail: 'https://mail.google.com/mail/u/0/#drafts?compose=msg1' })
+    expect(calls[0]!.url.pathname).toBe('/gmail/v1/users/me/drafts')
+    expect(calls.some((c) => c.url.pathname.includes('/send'))).toBe(false)
+    const raw = decodeRaw(JSON.parse(String(calls[0]!.init.body)).message.raw)
+    expect(raw).toContain('To: kato@example.com\r\n')
+    expect(raw).toContain('Subject: Running late\r\n')
+    expect(Buffer.from(raw.split('\r\n\r\n')[1]!, 'base64').toString('utf8')).toBe('Hi Kato,\r\nRunning 10 minutes late.')
+
+    await gmailCreateDraft.undo!(out, ctx())
+    expect(calls[1]!.init.method).toBe('DELETE')
+    expect(calls[1]!.url.pathname).toBe('/gmail/v1/users/me/drafts/r-1')
+  })
+
+  it('threads a reply using the original Message-ID', async () => {
+    const calls = stubGoogle((url) =>
+      url.pathname.includes('/messages/')
+        ? { status: 200, json: { threadId: 't9', payload: { headers: [{ name: 'Message-Id', value: '<abc@mail.example>' }] } } }
+        : { status: 200, json: { id: 'r-2', message: { id: 'msg2', threadId: 't9' } } },
+    )
+    await gmailCreateDraft.execute({ to: ['amina@example.com'], subject: 'Re: Q3 deck', body: 'Will send by 5.', replyToEmailId: 'm1' }, ctx())
+    const body = JSON.parse(String(calls[1]!.init.body))
+    expect(body.message.threadId).toBe('t9')
+    expect(decodeRaw(body.message.raw)).toContain('In-Reply-To: <abc@mail.example>\r\nReferences: <abc@mail.example>\r\n')
+  })
+
+  it('cannot be tricked into extra headers, and encodes non-ASCII subjects', () => {
+    const raw = Buffer.from(buildRawEmail({ to: ['a@example.com'], subject: 'Hi\r\nBcc: evil@example.com', body: 'x' }), 'base64url').toString('utf8')
+    const headers = raw.split('\r\n\r\n')[0]!.split('\r\n')
+    expect(headers.some((h) => h.startsWith('Bcc:'))).toBe(false)
+    expect(headers).toContain('Subject: Hi Bcc: evil@example.com')
+    const utf = Buffer.from(buildRawEmail({ to: ['a@example.com'], subject: 'Mkutano wa leo ✓', body: 'x' }), 'base64url').toString('utf8')
+    expect(utf).toContain(`Subject: =?UTF-8?B?${Buffer.from('Mkutano wa leo ✓').toString('base64')}?=`)
+  })
+
+  it('rejects invalid addresses at the input schema', () => {
+    expect(gmailCreateDraft.input.safeParse({ to: ['kato@example.com\r\nBcc: x@y.z'], subject: 's', body: 'b' }).success).toBe(false)
+    expect(gmailCreateDraft.input.safeParse({ to: [], subject: 's', body: 'b' }).success).toBe(false)
+  })
+
+  it('needs Gmail compose access', async () => {
+    await expect(gmailCreateDraft.execute({ to: ['a@example.com'], subject: 's', body: 'b' }, ctx(false))).rejects.toMatchObject({ capabilities: ['gmail.compose'] })
   })
 })
 

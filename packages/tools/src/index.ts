@@ -2,7 +2,9 @@ import type Anthropic from '@anthropic-ai/sdk'
 import type { AnyTool } from '@wa/core'
 import { calendarListEvents } from './calendar-list-events.js'
 import { createCalendarEvent } from './create-calendar-event.js'
+import { deleteCalendarEvent } from './delete-calendar-event.js'
 import { fetchPage } from './fetch-page.js'
+import { gmailCreateDraft } from './gmail-create-draft.js'
 import { gmailRead } from './gmail-read.js'
 import { gmailSearch } from './gmail-search.js'
 import { manageConnections } from './manage-connections.js'
@@ -14,6 +16,8 @@ export { assertFetchableUrl, BlockedUrlError, isPublicAddress } from './net-guar
 export { collectSearchOutput, createWebSearchTool, type Source } from './web-search.js'
 export { calendarListEvents } from './calendar-list-events.js'
 export { createCalendarEvent } from './create-calendar-event.js'
+export { deleteCalendarEvent } from './delete-calendar-event.js'
+export { buildRawEmail, gmailCreateDraft } from './gmail-create-draft.js'
 export { extractEmailText, gmailRead } from './gmail-read.js'
 export { gmailSearch } from './gmail-search.js'
 export { GoogleApiError } from './google-api.js'
@@ -30,6 +34,14 @@ export interface ToolDeps {
 /** Every tool available to the agent. One file per tool; each needs an eval in packages/agent/evals. */
 export function createTools(deps: ToolDeps): AnyTool[] {
   const tools: AnyTool[] = [createWebSearchTool({ anthropic: deps.anthropic, model: deps.searchModel }), fetchPage, undoLastAction]
-  if (deps.google) tools.push(calendarListEvents, createCalendarEvent, gmailSearch, gmailRead, manageConnections)
+  if (deps.google) tools.push(
+      calendarListEvents,
+      createCalendarEvent,
+      deleteCalendarEvent,
+      gmailSearch,
+      gmailRead,
+      gmailCreateDraft,
+      manageConnections,
+    )
   return tools
 }
