@@ -176,7 +176,7 @@ export function createRepo(db: Db) {
 
     async updateAction(
       id: string,
-      patch: { status: ActionStatus; result?: unknown; error?: string; undoExpiresAt?: Date; approvalExpiresAt?: Date },
+      patch: { status: ActionStatus; result?: unknown; error?: string; undoExpiresAt?: Date; approvalExpiresAt?: Date; card?: unknown },
     ) {
       await db.update(actions).set(patch).where(eq(actions.id, id))
     },

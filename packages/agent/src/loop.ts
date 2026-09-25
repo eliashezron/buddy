@@ -4,6 +4,7 @@ import {
   decide,
   NeedsConnectionError,
   type AnyTool,
+  type ApprovalCardText,
   type Capability,
   type ChannelName,
   type Logger,
@@ -35,7 +36,10 @@ export type ActionStatus =
 /** Persistence for the `actions` table. No tool runs without a row. */
 export interface ActionLog {
   create(input: { tool: string; risk: Risk; status: ActionStatus; input: unknown; approvalExpiresAt?: Date }): Promise<string>
-  update(id: string, patch: { status: ActionStatus; result?: unknown; error?: string; undoExpiresAt?: Date; approvalExpiresAt?: Date }): Promise<void>
+  update(
+    id: string,
+    patch: { status: ActionStatus; result?: unknown; error?: string; undoExpiresAt?: Date; approvalExpiresAt?: Date; card?: ApprovalCardText },
+  ): Promise<void>
 }
 
 export interface HistoryTurn {
@@ -67,6 +71,8 @@ export interface ToolCallRecord {
   input: unknown
   actionId?: string
   outcome: 'succeeded' | 'failed' | 'blocked' | 'invalid' | 'needs_connection' | 'awaiting_approval'
+  /** awaiting_approval: the card to show. */
+  card?: ApprovalCardText
 }
 
 export interface RunAgentResult {
@@ -129,12 +135,23 @@ export function toStrictSchema(node: unknown): unknown {
   return out
 }
 
+/**
+ * Strict tool use (schema-exact arguments) only for tools that act on other people or money.
+ * The API caps strict tools at 20 and rejects a request whose combined strict schemas are
+ * too large ("compiled grammar is too large"), which 19 tools already hit. Every tool's
+ * input is validated with zod before it runs either way, so non-strict tools are just as
+ * safe: a bad argument comes back to the model as an error.
+ */
+export const isStrict = (tool: AnyTool) => tool.risk === 'outbound' || tool.risk === 'money'
+
 export function toolParam(tool: AnyTool): Anthropic.Beta.Messages.BetaTool {
-  const { $schema: _ignored, ...schema } = toStrictSchema(z.toJSONSchema(tool.input)) as Record<string, unknown>
+  const strict = isStrict(tool)
+  const json = z.toJSONSchema(tool.input)
+  const { $schema: _ignored, ...schema } = (strict ? toStrictSchema(json) : json) as Record<string, unknown>
   return {
     name: tool.name,
     description: tool.description,
-    strict: true,
+    ...(strict ? { strict: true } : {}),
     input_schema: schema as Anthropic.Beta.Messages.BetaTool.InputSchema,
   }
 }
@@ -190,6 +207,17 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
       tool_use_id: block.id,
       content: typeof content === 'string' ? content : JSON.stringify(content),
       ...(isError ? { is_error: true } : {}),
+    })
+
+    const toolCtx = (actionId: string) => ({
+      userId: user.id,
+      runId,
+      actionId,
+      timezone: user.timezone,
+      now,
+      logger: logger.child({ tool: block.name, actionId }),
+      services: input.services,
+      ...(input.signal ? { signal: input.signal } : {}),
     })
 
     // Just-in-time permission: the system sends a one-time connect link for exactly
@@ -249,9 +277,28 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
           throw err
         }
       }
-      await actions.update(actionId, { status: 'awaiting_approval', approvalExpiresAt: new Date(Date.now() + decision.approvalTtlMs) })
+      // The card: from the account where the tool needs it (describe), else from the input.
+      let card: ApprovalCardText = { preview: tool.preview(parsed.data), title: tool.title?.(parsed.data) ?? tool.name }
+      if (tool.describe) {
+        try {
+          const described = await tool.describe(parsed.data, toolCtx(actionId))
+          if ('error' in described) {
+            await actions.update(actionId, { status: 'cancelled', error: described.error })
+            toolCalls.push({ name: tool.name, input: parsed.data, actionId, outcome: 'failed' })
+            return result({ ok: false, error: described.error }, true)
+          }
+          card = described
+        } catch (err) {
+          if (err instanceof NeedsConnectionError) return needsConnection(err, tool.name, parsed.data, actionId)
+          const message = err instanceof Error ? err.message : String(err)
+          await actions.update(actionId, { status: 'failed', error: message })
+          toolCalls.push({ name: tool.name, input: parsed.data, actionId, outcome: 'failed' })
+          return result(`Tool failed: ${message}`, true)
+        }
+      }
+      await actions.update(actionId, { status: 'awaiting_approval', approvalExpiresAt: new Date(Date.now() + decision.approvalTtlMs), card })
       approvalRequests.push(actionId)
-      toolCalls.push({ name: tool.name, input: parsed.data, actionId, outcome: 'awaiting_approval' })
+      toolCalls.push({ name: tool.name, input: parsed.data, actionId, outcome: 'awaiting_approval', card })
       return result({
         ok: true,
         status: 'awaiting_approval',
@@ -265,16 +312,7 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
 
     // Row first, then execution.
     const actionId = await actions.create({ tool: tool.name, risk: tool.risk, status: 'running', input: parsed.data })
-    const ctx = {
-      userId: user.id,
-      runId,
-      actionId,
-      timezone: user.timezone,
-      now,
-      logger: logger.child({ tool: tool.name, actionId }),
-      services: input.services,
-      ...(input.signal ? { signal: input.signal } : {}),
-    }
+    const ctx = toolCtx(actionId)
     try {
       const output = await tool.execute(parsed.data, ctx)
       const failed = typeof output === 'object' && output !== null && 'ok' in output && output.ok === false

@@ -114,7 +114,7 @@ describe('runAgent', () => {
     await runAgent({ ...base, createMessage, tools: tools(events), actions: log, message: { text: 'hi' } })
     const req = requests[0]!
     expect(req).toMatchObject({ betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default', thinking: { type: 'adaptive' } })
-    expect(req.tools?.[0]).toMatchObject({ name: 'web_search', strict: true, input_schema: { type: 'object', required: ['query'] } })
+    expect(req.tools?.[0]).toMatchObject({ name: 'web_search', input_schema: { type: 'object', required: ['query'] } })
     const [instructions, context] = req.system as { text: string; cache_control?: unknown }[]
     expect(context!.text).toContain('Thursday, 24 September 2026 at 12:00')
     expect(context!.text).toContain('Africa/Kampala')
@@ -209,6 +209,39 @@ describe('runAgent', () => {
     expect(rows.get('act_1')).toMatchObject({ status: 'failed', error: 'needs_connection:not_connected' })
     expect(out.approvalRequests).toEqual([])
     expect(out.connectionRequests).toEqual(['gmail.compose'])
+  })
+
+  it('describe builds the card from the account, stores it, and can refuse before asking', async () => {
+    const { log, events, rows } = recordingActions()
+    const cancel = defineTool({
+      name: 'cancel_meeting',
+      description: 'cancel',
+      risk: 'outbound',
+      input: z.object({ eventId: z.string() }),
+      preview: ({ eventId }) => `Cancel ${eventId}`,
+      async describe({ eventId }) {
+        events.push(`describe:${eventId}`)
+        return eventId === 'theirs' ? { error: 'Amina organised this meeting' } : { preview: 'Cancel "Supplier call" and tell kato@', title: 'Cancel "Supplier call"' }
+      },
+      async execute() {
+        events.push('execute:cancel_meeting')
+        return { ok: true }
+      },
+    })
+    const { createMessage, requests } = scripted([
+      message('tool_use', [toolUse('t1', 'cancel_meeting', { eventId: 'mine' })]),
+      message('tool_use', [toolUse('t2', 'cancel_meeting', { eventId: 'theirs' })]),
+      message('end_turn', [text('One is ready to approve; the other is not yours to cancel.')]),
+    ])
+    const out = await runAgent({ ...base, createMessage, tools: [cancel] as AnyTool[], actions: log, message: { text: 'cancel both' } })
+    expect(events).not.toContain('execute:cancel_meeting')
+    const card = { preview: 'Cancel "Supplier call" and tell kato@', title: 'Cancel "Supplier call"' }
+    expect(rows.get('act_1')).toMatchObject({ status: 'awaiting_approval', card })
+    expect(out.toolCalls[0]).toMatchObject({ outcome: 'awaiting_approval', card })
+    expect(rows.get('act_2')).toMatchObject({ status: 'cancelled', error: 'Amina organised this meeting' })
+    expect(out.approvalRequests).toEqual(['act_1'])
+    const refused = JSON.parse(String((requests[2]!.messages.at(-1)!.content as { content: string }[])[0]!.content))
+    expect(refused).toEqual({ ok: false, error: 'Amina organised this meeting' })
   })
 
   it('rejects invalid tool input without creating a row', async () => {
@@ -352,9 +385,31 @@ describe('toolParam (strict tool schemas)', () => {
     expect(tools.length).toBeGreaterThanOrEqual(8)
     for (const tool of tools) {
       const param = toolParam(tool)
+      if (!param.strict) continue
       expect(keys(param.input_schema).filter((k) => FORBIDDEN.includes(k) || k === 'minItems>1'), tool.name).toEqual([])
-      expect(param.strict).toBe(true)
     }
+  })
+
+  it('marks only outbound and money tools strict, well under the API limit (regression: 400 at 19 strict tools)', async () => {
+    const { createTools } = await import('@wa/tools')
+    const params = createTools({ anthropic: {} as never, searchModel: 'x', google: true }).map((t) => ({ tool: t, param: toolParam(t) }))
+    for (const { tool, param } of params) expect(Boolean(param.strict), tool.name).toBe(tool.risk === 'outbound' || tool.risk === 'money')
+    // The API allows 20 and fails earlier on total grammar size; leave room (evals add 2 decoys).
+    expect(params.filter((p) => p.param.strict).length).toBeLessThanOrEqual(8)
+  })
+
+  it('non-strict tools keep their native bounds for the model', () => {
+    const tool = defineTool({
+      name: 'x',
+      description: 'x',
+      risk: 'read',
+      input: z.object({ n: z.number().int().min(1).max(10) }),
+      preview: () => '',
+      execute: async () => ({}),
+    }) as AnyTool
+    const param = toolParam(tool)
+    expect(param.strict).toBeUndefined()
+    expect((param.input_schema as { properties: { n: object } }).properties.n).toMatchObject({ minimum: 1, maximum: 10 })
   })
 
   it('keeps the range visible to the model in the description', () => {
@@ -366,7 +421,7 @@ describe('toolParam (strict tool schemas)', () => {
       preview: () => '',
       execute: async () => ({}),
     }) as AnyTool
-    const schema = toolParam(tool).input_schema as { properties: { n: { description: string } } }
+    const schema = toStrictSchema(z.toJSONSchema(tool.input)) as { properties: { n: { description: string } } }
     expect(schema.properties.n.description).toBe('Minutes (minimum 5, maximum 1440)')
   })
 

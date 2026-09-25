@@ -17,6 +17,12 @@ export interface ToolContext {
   signal?: AbortSignal
 }
 
+/** What an approval card says: `preview` is the full text, `title` one line. */
+export interface ApprovalCardText {
+  preview: string
+  title: string
+}
+
 export interface ToolDefinition<I extends z.ZodType = z.ZodType, O = unknown> {
   name: string
   /** Shown to the model. Say when to use the tool and when not to. */
@@ -30,11 +36,20 @@ export interface ToolDefinition<I extends z.ZodType = z.ZodType, O = unknown> {
   preview(input: z.infer<I>): string
   /** One line for approval buttons and confirmations, e.g. `Email to kato@example.com`. */
   title?(input: z.infer<I>): string
+  /** The approve button's label (max 20 chars), e.g. `Send invite`. Default `Send`. */
+  approveLabel?: string
   /**
    * Permissions checked before asking for approval, so a missing one sends a connect link
    * instead of a card the user can't use.
    */
   requires?(input: z.infer<I>): Capability[]
+  /**
+   * outbound/money: builds the approval card from the account itself when the input alone
+   * can't say what will happen (an event id → its title, time and guests; a file id → its
+   * name). Runs when approval is requested; the card is stored with the action, so the
+   * record shows exactly what the user approved. Return `error` to refuse before asking.
+   */
+  describe?(input: z.infer<I>, ctx: ToolContext): Promise<ApprovalCardText | { error: string }>
   execute(input: z.infer<I>, ctx: ToolContext): Promise<O>
   /** low_write tools: reverses a successful execute (offered for 10 minutes). */
   undo?(result: O, ctx: ToolContext): Promise<void>

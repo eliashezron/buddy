@@ -43,6 +43,9 @@ Later: "book focus time Friday 2pm"
 | `create_document` | low_write, undoable 10 min | Drive file (`drive.file`). Markdown uploaded as HTML; Drive converts it to a formatted Doc. Private: never shared. Undo moves it to the trash. |
 | `create_spreadsheet` | low_write, undoable 10 min | Drive file. Tabs, bold frozen header, real numbers and formulas. Formulas that fetch from the web (IMPORTXML, IMAGE, …) are stored as text so a sheet built from untrusted content can't leak its data. Leading-zero numbers (phone numbers) stay text. |
 | `create_presentation` | low_write, undoable 10 min | Drive file. Title slide plus title-and-bullets slides; a half-built deck is trashed if filling it fails. |
+| `send_calendar_invite` | **outbound**, needs approval | calendar write. An event with guests (optional Meet link); Google emails the invitations. |
+| `cancel_calendar_event` | **outbound**, needs approval | calendar write. Cancels a meeting the user organised that has guests; Google emails them. Meetings others organised are refused. |
+| `share_file` | **outbound**, needs approval | Drive file. Shares a file the app created as viewer / commenter / editor; Google emails a link. |
 | `gmail_send_email` | **outbound**, needs approval | Gmail compose (+ read to thread a reply). Sends only after the user presses Send on the card. |
 | `manage_connections` | low_write | none. Lists access or disconnects (revokes at Google). |
 | `undo_last_action` | low_write | none. Reverses the last undoable change within 10 minutes. |
@@ -56,8 +59,8 @@ would be `outbound`), are not supported yet. `drive.readonly` is restricted, lik
 Google has no drafts-only scope: `gmail.compose` also permits sending, and Google's consent
 screen says so ("manage drafts and send emails"). Sending is gated by the approval flow
 below, not by the scope. Like `gmail.readonly`, `gmail.compose` is a restricted scope for
-Google app verification. Calendar invitations and deleting events with guests are also
-`outbound` and will use the same flow; they aren't built yet.
+Google app verification. Calendar invitations, cancelling meetings with guests and sharing
+files are also `outbound` and use the same flow.
 
 ## Approvals (`outbound` actions)
 
@@ -87,6 +90,15 @@ User taps Send
 - **Expiry.** After 15 minutes the action is marked `expired` and nothing is sent.
 - On Telegram the buttons are removed after a decision. WhatsApp reply buttons can't be
   removed; a later tap gets "That was already done / cancelled".
+- **Cards show facts from the account, not the model's words.** A tool whose input is
+  just an id (`cancel_calendar_event`, `share_file`) has a `describe` step that runs when
+  approval is requested: it fetches the event's title, time and guests, or the file's
+  name, and can refuse early (not the organiser; not a file the app created). The card is
+  stored on the action (`actions.card`), so the record shows exactly what was approved,
+  and the "Done" confirmation uses its title.
+- **Strict tool use only for outbound and money tools.** The API allows at most 20 strict
+  tools and rejects large combined schemas; every tool's input is validated with zod
+  before it runs either way.
 - `money` stays blocked: payments also need a PSP PIN step and spend limits.
 
 **Security**

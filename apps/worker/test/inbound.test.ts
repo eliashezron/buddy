@@ -612,7 +612,9 @@ describe('inbound handler: approvals (outbound actions)', () => {
   it('an approval after 15 minutes expires instead of sending', async () => {
     let clock = Date.now()
     const { t, executed, action } = await requestSend({ now: () => new Date(clock) })
-    clock += 15 * 60_000 + 1
+    // Step just past the stored expiry: the agent stamps it from the real clock during the run,
+    // which can be well over a millisecond after `clock` was read.
+    clock = action.approvalExpiresAt!.getTime() + 1
     await t.handle(press(`approve:${action.id}`))
     expect(executed).toEqual([])
     expect(action.status).toBe('expired')
@@ -656,6 +658,32 @@ describe('inbound handler: approvals (outbound actions)', () => {
     // No approval card: the only button is the connect link.
     expect(t.tg.sent.flatMap((m) => m.buttons?.flat() ?? []).some((b) => 'data' in b)).toBe(false)
     expect(t.tg.sent.at(-1)!.buttons).toEqual([[{ text: 'Connect Google', url: 'https://api.example/oauth/google/start?s=TOKEN' }]])
+  })
+
+  it('shows the card built by describe (facts from the account) with the tool\'s own button label', async () => {
+    const executed: unknown[] = []
+    const cancel = defineTool({
+      name: 'cancel_calendar_event',
+      description: 'cancel',
+      risk: 'outbound',
+      input: z.object({ eventId: z.string() }),
+      approveLabel: 'Cancel meeting',
+      preview: ({ eventId }) => `Cancel ${eventId}?`,
+      describe: async () => ({ preview: '**Cancel "Supplier call"?**\nGoogle will email: kato@example.com', title: 'Cancel "Supplier call"' }),
+      execute: async (input) => (executed.push(input), { ok: true }),
+    })
+    const script = [toolUse('cancel_calendar_event', { eventId: 'ev1' }), reply('Ready for you to confirm.')]
+    const t = setup(async () => script.shift()!, { tools: [cancel] })
+    const [first] = fixtureEvents('telegram-text')
+    await t.handle(first!)
+    const action = t.actions.find((a) => a.tool === 'cancel_calendar_event')!
+    const card = t.tg.sent.at(-1)!
+    expect(card.text).toBe('<b>Cancel "Supplier call"?</b>\nGoogle will email: kato@example.com')
+    expect(card.buttons?.[0]?.[0]).toEqual({ text: '✅ Cancel meeting', data: `approve:${action.id}` })
+    expect(executed).toEqual([])
+    await t.handle(press(`approve:${action.id}`))
+    expect(executed).toEqual([{ eventId: 'ev1' }])
+    expect(t.tg.sent.at(-1)!.text).toContain('Done: Cancel')
   })
 
   it('WhatsApp: reply buttons carry the same payloads, and a button reply approves', async () => {
