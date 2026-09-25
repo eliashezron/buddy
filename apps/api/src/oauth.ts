@@ -52,6 +52,8 @@ export const oauthRoutes: FastifyPluginAsync<OAuthRouteOptions> = async (app, op
       userId: outcome.userId,
       triggerMessageId: outcome.triggerMessageId,
       requested: outcome.requested,
+      needed: outcome.needed,
+      granted: outcome.kind === 'connected' ? outcome.granted : [],
       missing: outcome.kind === 'connected' ? outcome.missing : [],
       account: outcome.kind === 'connected' ? outcome.account : null,
     }
@@ -60,7 +62,7 @@ export const oauthRoutes: FastifyPluginAsync<OAuthRouteOptions> = async (app, op
 
     if (outcome.kind === 'denied') return page(reply, 200, 'Nothing was connected', 'You can close this page and go back to the chat.')
     if (outcome.kind === 'failed') return page(reply, 502, 'Something went wrong', 'Please go back to the chat and ask again for a new link.')
-    const what = [...new Set(outcome.requested.map((c) => CAPABILITIES[c].product))].join(' and ')
+    const what = [...new Set(outcome.granted.map((c) => CAPABILITIES[c].product))].join(', ') || 'Google'
     const who = outcome.account ? ` for ${escape(outcome.account)}` : ''
     return page(reply, 200, `${escape(what)} connected`, `Connected${who}. You can close this page and go back to the chat; the assistant will carry on.`)
   })

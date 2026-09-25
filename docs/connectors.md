@@ -1,7 +1,11 @@
-# Connectors: Google Calendar and Gmail
+# Connectors: Google Calendar, Gmail and Drive
 
-Users connect accounts **only when they ask for something that needs them**. Nothing
-is requested up front, and each request asks for only the permission that task needs.
+Users connect accounts **only when they ask for something that needs them**. Nothing is
+requested up front. When a link is needed, Google's screen offers **every** permission
+at once (Calendar, Gmail, Drive), one checkbox each, so the user decides everything in
+one go and isn't asked again for each new kind of task. The request that triggered the
+link re-runs if the permission it *needed* was granted; optional ones left unticked are
+fine.
 
 ## How it works
 
@@ -16,14 +20,16 @@ User: "what's on my calendar tomorrow?"
     history, so the model never sees it.
 User taps it
   → /oauth/google/start checks the link (unused, <15 min old) → 302 to Google
-    asking only for calendar.events.readonly (+ openid email), with PKCE
+    offering every capability's scope (+ openid email), with PKCE; the needed one first
   → Google consent → /oauth/google/callback
   → link consumed (single use), code exchanged, granted scopes checked
-  → tokens encrypted and stored; "✅ Connected Google Calendar (you@gmail.com)"
-  → the original request re-runs automatically and the answer arrives in chat
+  → tokens encrypted and stored; "✅ Connected Google Calendar and Gmail (you@gmail.com)"
+  → if the *needed* permission was granted, the original request re-runs automatically;
+    if not: "You didn't allow me to see your calendar events, so I can't do that part."
 Later: "book focus time Friday 2pm"
-  → create_calendar_event needs calendar.write → a new link asks only for that
-    (incremental authorization keeps the earlier grant)
+  → already granted when they ticked everything: runs straight away. If they had
+    unticked it, a new link (again offering everything; incremental authorization keeps
+    earlier grants)
 ```
 
 | Tool | Risk | Needs |

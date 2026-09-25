@@ -9,7 +9,7 @@ import {
   type TokenCipher,
 } from '@wa/core'
 import type { Repo } from '@wa/db'
-import { CAPABILITY_SCOPE, grantedCapabilities, grants, GoogleOAuthError, pkcePair, type GoogleOAuth } from './google.js'
+import { CAPABILITY_SCOPE, GOOGLE_CAPABILITIES, grantedCapabilities, grants, GoogleOAuthError, pkcePair, type GoogleOAuth } from './google.js'
 
 export type ConnectorRepo = Pick<
   Repo,
@@ -92,7 +92,7 @@ export function googleConnectionManager(deps: GoogleConnectorDeps, userId: strin
  */
 export async function createConnectLink(
   deps: GoogleConnectorDeps & { baseUrl: string },
-  input: { userId: string; capabilities: Capability[]; triggerMessageId: string | null },
+  input: { userId: string; needed: Capability[]; triggerMessageId: string | null },
 ): Promise<{ url: string; expiresAt: Date }> {
   const now = deps.now ?? (() => new Date())
   const token = randomBytes(32).toString('base64url')
@@ -103,7 +103,10 @@ export async function createConnectLink(
     tokenHash,
     userId: input.userId,
     provider: 'google',
-    capabilities: [...new Set(input.capabilities)],
+    // Everything at once: Google shows a checkbox per permission, so the user picks what to
+    // allow and isn't asked again later. `needed` is what this request can't do without.
+    capabilities: [...new Set([...input.needed, ...GOOGLE_CAPABILITIES])],
+    needed: [...new Set(input.needed)],
     codeVerifierEnc: deps.cipher.encrypt(verifier, verifierContext(tokenHash)),
     triggerMessageId: input.triggerMessageId,
     expiresAt,

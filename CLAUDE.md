@@ -75,7 +75,9 @@ fixtures/         saved webhook payloads used by `pnpm replay` and tests
 - Every outbound WhatsApp send goes through `packages/whatsapp` — never `fetch` the
   Graph API from a route or a tool. Likewise Telegram goes through `packages/telegram`.
 - Account access is requested just in time: a tool raises `NeedsConnectionError`, and
-  the system (never the model) sends a one-time link for exactly that permission. See
+  the system (never the model) sends a one-time link. The link offers every Google
+  permission at once (product decision, 2026-09-25); the user unticks what they don't
+  want. The request re-runs if the permission it *needed* was granted. See
   `docs/connectors.md`.
 - Code past the webhook is channel-agnostic: it uses the `Channel` / `ChannelEvent` types
   in `packages/core`. Telegram is official Bot API only, private chats only; see

@@ -27,7 +27,7 @@ export function createMemoryConnectorRepo() {
       return connections.delete(key(userId, provider))
     },
     async createOAuthState(input) {
-      states.set(input.tokenHash, { ...input, createdAt: new Date(), usedAt: null })
+      states.set(input.tokenHash, { needed: [], ...input, createdAt: new Date(), usedAt: null })
     },
     async findLiveOAuthState(tokenHash, now) {
       const s = states.get(tokenHash)

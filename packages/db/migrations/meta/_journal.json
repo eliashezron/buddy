@@ -43,6 +43,13 @@
       "when": 1790333689471,
       "tag": "0005_white_namora",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790341493550,
+      "tag": "0006_wooden_ben_urich",
+      "breakpoints": true
     }
   ]
 }

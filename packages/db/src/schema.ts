@@ -159,8 +159,10 @@ export const oauthStates = pgTable('oauth_states', {
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
   provider: provider('provider').notNull(),
-  /** Capabilities requested (see CAPABILITIES in @wa/core). */
+  /** Capabilities offered on Google's consent screen (see CAPABILITIES in @wa/core). */
   capabilities: text('capabilities').array().notNull(),
+  /** The subset the triggering request needs; the rest are optional for the user. Empty on older rows (= all needed). */
+  needed: text('needed').array().notNull().default(sql`'{}'::text[]`),
   codeVerifierEnc: text('code_verifier_enc').notNull(),
   /** The message that needed the connection; re-run after the user connects. */
   triggerMessageId: uuid('trigger_message_id').references(() => messages.id, { onDelete: 'set null' }),
