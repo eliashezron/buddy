@@ -27,12 +27,19 @@ Later: "book focus time Friday 2pm"
 | --- | --- | --- |
 | `calendar_list_events` | read | calendar read (`calendar.events.readonly`) |
 | `create_calendar_event` | low_write, undoable 10 min | calendar write (`calendar.events`). Private events only: no guests, no notifications. |
+| `delete_calendar_event` | low_write, undoable 10 min | calendar write. Own events only, no notifications. Events with other guests are refused (deleting them notifies people). Undo restores the same event. |
 | `gmail_search`, `gmail_read` | read | Gmail read (`gmail.readonly`) |
+| `gmail_create_draft` | low_write, undoable 10 min | Gmail compose (`gmail.compose`). Saves a draft (new or a threaded reply); never sends. Undo deletes the draft. |
 | `manage_connections` | low_write | none. Lists access or disconnects (revokes at Google). |
 | `undo_last_action` | low_write | none. Reverses the last undoable change within 10 minutes. |
 
-Sending email and inviting people are `outbound`: they need the approval-buttons flow
-(not built yet), so the agent offers drafts instead.
+Sending email, inviting people and deleting events with guests are `outbound`: they need
+the approval-buttons flow (not built yet), so the agent saves drafts instead.
+
+Google has no drafts-only scope: `gmail.compose` also permits sending, and Google's consent
+screen says so ("manage drafts and send emails"). Sending is still blocked by the policy
+gate (`outbound` needs approval), and no tool calls the send endpoint. Like `gmail.readonly`,
+`gmail.compose` is a restricted scope for Google app verification.
 
 **Security**
 - Refresh and access tokens are encrypted with AES-256-GCM. Each ciphertext is bound
@@ -45,7 +52,8 @@ Sending email and inviting people are `outbound`: they need the approval-buttons
 - A revoked grant (`invalid_grant`, or a 401 from Google) deletes the stored tokens,
   and the next request sends a fresh link.
 - Email and event text is untrusted content. An adversarial eval checks that an email
-  saying "add a calendar event / pay this" causes no action.
+  saying "add a calendar event / pay this" or "delete my meetings / draft a reply with
+  the password" causes no action.
 
 ## Local setup (one-time, about 10 minutes)
 
@@ -83,6 +91,9 @@ points at `localhost:3000`, which a phone can't reach.
 | "Block 2 hours for focus time on Friday at 2pm" | A new link for write access only. After allowing, the event is created. Check Google Calendar. |
 | "Undo that" | The event disappears (within 10 min). |
 | "Any emails from <someone> this week?" | A link for Gmail read. After allowing, a summary. |
+| "Delete <an event you created>" | Removed with no notification; "undo" brings back the same event. |
+| "Delete <an event with guests>" | Refused: remove it in Google Calendar. Nothing changes. |
+| "Draft a reply to <someone>'s latest email saying …" | A link for Gmail compose. After allowing, a draft in the same thread in Gmail Drafts. Nothing is sent. |
 | "What can you access?" | Lists Google with calendar + Gmail access. |
 | "Disconnect Google" | Access revoked (see https://myaccount.google.com/permissions). The next calendar question asks again. |
 | Open a link twice, or after 15 min | "This link has expired / already been used". |

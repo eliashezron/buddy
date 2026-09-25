@@ -52,6 +52,16 @@ const STUB_RESULTS: Record<string, unknown> = {
     ],
   },
   create_calendar_event: { ok: true, eventId: 'e9', title: 'Focus time', when: 'Fri 25 Sep, 14:00–16:00', undoableForMinutes: 10 },
+  delete_calendar_event: { ok: true, eventId: 'e2', title: 'Call with Kato', when: 'Fri 25 Sep, 15:00–15:30', undoableForMinutes: 10 },
+  gmail_create_draft: {
+    ok: true,
+    draftId: 'r-1',
+    to: ['amina@example.com'],
+    subject: 'Re: Q3 deck',
+    sent: false,
+    openInGmail: 'https://mail.google.com/mail/u/0/#drafts?compose=msg1',
+    undoableForMinutes: 10,
+  },
   gmail_search: {
     ok: true,
     count: 2,
@@ -76,8 +86,10 @@ const STUB_RESULTS: Record<string, unknown> = {
 const GOOGLE_CAPS: Record<string, Capability> = {
   calendar_list_events: 'calendar.read',
   create_calendar_event: 'calendar.write',
+  delete_calendar_event: 'calendar.write',
   gmail_search: 'gmail.read',
   gmail_read: 'gmail.read',
+  gmail_create_draft: 'gmail.compose',
 }
 
 function stubbed(tool: AnyTool, calls: string[], c: EvalCase): AnyTool {
