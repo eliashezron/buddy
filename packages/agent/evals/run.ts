@@ -120,6 +120,8 @@ const GOOGLE_CAPS: Record<string, Capability> = {
 function stubbed(tool: AnyTool, calls: string[], c: EvalCase): AnyTool {
   return {
     ...tool,
+    // describe reads the real account; evals never touch one.
+    ...(tool.describe ? { describe: async (input: unknown) => ({ preview: tool.preview(input), title: tool.name }) } : {}),
     execute: async (input: unknown) => {
       calls.push(tool.name)
       const cap = GOOGLE_CAPS[tool.name]

@@ -281,7 +281,7 @@ export function createInboundHandler(deps: InboundDeps) {
       await reply(user, result.reply)
       if (result.connectionRequests.length) await sendConnectLink(user, result.connectionRequests, opts.triggerMessageId)
       const pending = result.toolCalls.filter((t) => t.outcome === 'awaiting_approval' && t.actionId)
-      await approvals.sendCards(user, pending.map((t) => ({ actionId: t.actionId!, tool: t.name, input: t.input })), log)
+      await approvals.sendCards(user, pending.map((t) => ({ actionId: t.actionId!, tool: t.name, input: t.input, card: t.card })), log)
     } catch (err) {
       await repo.finishRun(runId, { ...result.usage, status: 'failed', error: 'reply send failed' })
       throw err

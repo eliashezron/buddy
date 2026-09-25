@@ -1,6 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import type { AnyTool } from '@wa/core'
 import { calendarListEvents } from './calendar-list-events.js'
+import { cancelCalendarEvent } from './cancel-calendar-event.js'
 import { createCalendarEvent } from './create-calendar-event.js'
 import { createDocument } from './create-document.js'
 import { createPresentation } from './create-presentation.js'
@@ -14,6 +15,8 @@ import { gmailRead } from './gmail-read.js'
 import { gmailSendEmail } from './gmail-send-email.js'
 import { gmailSearch } from './gmail-search.js'
 import { manageConnections } from './manage-connections.js'
+import { sendCalendarInvite } from './send-calendar-invite.js'
+import { shareFile } from './share-file.js'
 import { undoLastAction } from './undo-last-action.js'
 import { createWebSearchTool } from './web-search.js'
 
@@ -35,6 +38,9 @@ export { extractEmailText, gmailRead } from './gmail-read.js'
 export { gmailSearch } from './gmail-search.js'
 export { GoogleApiError } from './google-api.js'
 export { manageConnections } from './manage-connections.js'
+export { cancelCalendarEvent } from './cancel-calendar-event.js'
+export { sendCalendarInvite } from './send-calendar-invite.js'
+export { shareFile } from './share-file.js'
 export { undoLastAction } from './undo-last-action.js'
 
 export interface ToolDeps {
@@ -51,6 +57,8 @@ export function createTools(deps: ToolDeps): AnyTool[] {
       calendarListEvents,
       createCalendarEvent,
       deleteCalendarEvent,
+      sendCalendarInvite,
+      cancelCalendarEvent,
       gmailSearch,
       gmailRead,
       gmailCreateDraft,
@@ -60,6 +68,7 @@ export function createTools(deps: ToolDeps): AnyTool[] {
       createDocument,
       createSpreadsheet,
       createPresentation,
+      shareFile,
       manageConnections,
     )
   return tools
