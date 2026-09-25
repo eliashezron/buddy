@@ -9,6 +9,7 @@ import {
   gmailCreateDraft,
   gmailRead,
   gmailSearch,
+  gmailSendEmail,
 } from '../src/index.js'
 
 type Handler = (url: URL, init: RequestInit) => { status: number; json?: unknown }
@@ -190,6 +191,34 @@ describe('gmail_create_draft', () => {
 
   it('needs Gmail compose access', async () => {
     await expect(gmailCreateDraft.execute({ to: ['a@example.com'], subject: 's', body: 'b' }, ctx(false))).rejects.toMatchObject({ capabilities: ['gmail.compose'] })
+  })
+})
+
+describe('gmail_send_email', () => {
+  const email = { to: ['kato@example.com', 'amina@example.com'], cc: ['boss@example.com'], subject: 'Running late', body: 'Hi both,\nRunning 10 minutes late.' }
+
+  it('is outbound, and its approval card shows every recipient and the full text', () => {
+    expect(gmailSendEmail.risk).toBe('outbound')
+    const card = gmailSendEmail.preview(email)
+    for (const part of ['kato@example.com', 'amina@example.com', 'Cc: boss@example.com', 'Subject: Running late', 'Hi both,\nRunning 10 minutes late.']) {
+      expect(card).toContain(part)
+    }
+    expect(gmailSendEmail.title!(email)).toBe('Email to kato@example.com, amina@example.com: "Running late"')
+  })
+
+  it('needs compose, plus read for a reply (to thread it)', () => {
+    expect(gmailSendEmail.requires!(email)).toEqual(['gmail.compose'])
+    expect(gmailSendEmail.requires!({ ...email, replyToEmailId: 'm1' })).toEqual(['gmail.compose', 'gmail.read'])
+  })
+
+  it('sends through messages/send with the composed message', async () => {
+    const calls = stubGoogle(() => ({ status: 200, json: { id: 'sent1', threadId: 't1' } }))
+    const out = await gmailSendEmail.execute(email, ctx())
+    expect(out).toEqual({ ok: true, sent: true, messageId: 'sent1', to: email.to, subject: 'Running late' })
+    expect(calls[0]!.url.pathname).toBe('/gmail/v1/users/me/messages/send')
+    const raw = Buffer.from(JSON.parse(String(calls[0]!.init.body)).raw, 'base64url').toString('utf8')
+    expect(raw).toContain('To: kato@example.com, amina@example.com\r\n')
+    expect(raw).toContain('Cc: boss@example.com\r\n')
   })
 })
 

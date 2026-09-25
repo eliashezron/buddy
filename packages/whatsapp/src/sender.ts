@@ -1,5 +1,5 @@
-import { ChannelSendError, type Channel, type InboundMessage } from '@wa/core'
-import type { WhatsAppClient } from './client.js'
+import { approvalButtonId, ChannelSendError, type Channel, type InboundMessage } from '@wa/core'
+import { BUTTON_BODY_MAX, BUTTON_TITLE_MAX, type WhatsAppClient } from './client.js'
 import { splitMessage, toWhatsAppText } from './format.js'
 
 export const SERVICE_WINDOW_MS = 24 * 60 * 60_000
@@ -29,13 +29,16 @@ export function createWhatsAppChannel({
   now = () => new Date(),
   onTypingError = () => {},
 }: WhatsAppChannelDeps): Channel {
-  return {
+  async function assertWindowOpen(to: string) {
+    const last = await getLastInboundAt(to)
+    if (!last || now().getTime() - last.getTime() >= SERVICE_WINDOW_MS) {
+      throw new OutsideServiceWindowError(last)
+    }
+  }
+  const channel: Channel = {
     name: 'whatsapp',
     async sendText(to, markdown) {
-      const last = await getLastInboundAt(to)
-      if (!last || now().getTime() - last.getTime() >= SERVICE_WINDOW_MS) {
-        throw new OutsideServiceWindowError(last)
-      }
+      await assertWindowOpen(to)
       const ids: string[] = []
       for (const chunk of splitMessage(toWhatsAppText(markdown))) {
         const { messageId } = await client.sendText(to, chunk)
@@ -48,5 +51,22 @@ export function createWhatsAppChannel({
       client.markRead(message.platformMessageId, { typing: true }).catch(onTypingError)
       return () => {}
     },
+    async sendApproval(to, card) {
+      await assertWindowOpen(to)
+      const buttons = [
+        { id: approvalButtonId('approve', card.actionId), title: card.approveLabel.slice(0, BUTTON_TITLE_MAX) },
+        { id: approvalButtonId('cancel', card.actionId), title: 'Cancel' },
+      ]
+      const body = toWhatsAppText(card.preview)
+      if (body.length <= BUTTON_BODY_MAX) return [(await client.sendButtons(to, body, buttons)).messageId]
+      // A button message holds 1024 chars: send the full text first, then the buttons.
+      const ids = await channel.sendText(to, card.preview)
+      const title = card.title.length > 200 ? `${card.title.slice(0, 199)}…` : card.title
+      ids.push((await client.sendButtons(to, toWhatsAppText(`**${title}**: approve the message above?`), buttons)).messageId)
+      return ids
+    },
+    // Reply buttons can't be removed on WhatsApp. A later tap on a decided card is a no-op.
+    async closeApproval() {},
   }
+  return channel
 }

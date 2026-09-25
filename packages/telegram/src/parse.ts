@@ -1,5 +1,5 @@
 import type { ChannelEvent, InboundMessage } from '@wa/core'
-import { telegramMessageSchema, telegramUpdateSchema, type TelegramMessage } from './schemas.js'
+import { telegramCallbackQuerySchema, telegramMessageSchema, telegramUpdateSchema, type TelegramMessage } from './schemas.js'
 
 export interface TelegramParseResult {
   updateId: number
@@ -88,7 +88,32 @@ function toInbound(m: TelegramMessage, botId: string): InboundMessage {
 export function parseTelegramUpdate(json: unknown, opts: TelegramParseOptions): TelegramParseResult {
   const update = telegramUpdateSchema.safeParse(json)
   if (!update.success) throw new InvalidUpdateError('not a Telegram update')
-  const { update_id: updateId, message, ...rest } = update.data
+  const { update_id: updateId, message, callback_query: callbackQuery, ...rest } = update.data
+
+  if (callbackQuery !== undefined) {
+    const cq = telegramCallbackQuerySchema.safeParse(callbackQuery)
+    if (!cq.success || !cq.data.message || cq.data.data === undefined) {
+      return { updateId, events: [], skipped: [{ field: 'callback_query', reason: 'malformed callback query' }] }
+    }
+    const { id, from, message: card, data } = cq.data
+    // Only a press in the user's own private chat with the bot counts. In a private chat the
+    // chat id is the user's id, so a mismatch means someone else pressed it.
+    if (card.chat.type !== 'private' || from.is_bot || String(from.id) !== String(card.chat.id)) {
+      return { updateId, events: [], skipped: [{ field: 'callback_query', reason: 'not from the chat owner' }] }
+    }
+    const chatId = String(card.chat.id)
+    const pressed: InboundMessage = {
+      channel: 'telegram',
+      id: `${opts.botId}:${chatId}:cb:${id}`,
+      from: chatId,
+      timestamp: Math.floor(Date.now() / 1000),
+      type: 'button',
+      platformMessageId: String(card.message_id),
+      reply: { id: data, title: data },
+      callbackId: id,
+    }
+    return { updateId, events: [{ kind: 'message', message: pressed }], skipped: [] }
+  }
 
   if (message === undefined) {
     const field = Object.keys(rest)[0] ?? 'unknown'

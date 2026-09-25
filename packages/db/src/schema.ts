@@ -107,6 +107,8 @@ export const actions = pgTable(
     result: jsonb('result'),
     error: text('error'),
     approvalExpiresAt: timestamp('approval_expires_at', { withTimezone: true }),
+    /** When the user approved or cancelled (audit trail for outbound and money actions). */
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
     undoExpiresAt: timestamp('undo_expires_at', { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: timestamp('updated_at', { withTimezone: true })

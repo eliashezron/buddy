@@ -176,9 +176,37 @@ export function createRepo(db: Db) {
 
     async updateAction(
       id: string,
-      patch: { status: ActionStatus; result?: unknown; error?: string; undoExpiresAt?: Date },
+      patch: { status: ActionStatus; result?: unknown; error?: string; undoExpiresAt?: Date; approvalExpiresAt?: Date },
     ) {
       await db.update(actions).set(patch).where(eq(actions.id, id))
+    },
+
+    /**
+     * Applies a button press to an `awaiting_approval` action. The whole check is one UPDATE
+     * (same user, still awaiting, not expired), so a double tap or a redelivered press can
+     * claim it only once. `approved` hands back the row, now `running`, with its stored input.
+     */
+    async decideApproval(input: { actionId: string; userId: string; decision: 'approve' | 'cancel'; now: Date }) {
+      const pending = and(
+        eq(actions.id, input.actionId),
+        eq(actions.userId, input.userId),
+        eq(actions.status, 'awaiting_approval'),
+        gt(actions.approvalExpiresAt, input.now),
+      )
+      const [claimed] = await db
+        .update(actions)
+        .set({ status: input.decision === 'approve' ? 'running' : 'cancelled', decidedAt: input.now })
+        .where(pending)
+        .returning()
+      if (claimed) return { kind: input.decision === 'approve' ? ('approved' as const) : ('cancelled' as const), action: claimed }
+
+      const row = await db.query.actions.findFirst({ where: and(eq(actions.id, input.actionId), eq(actions.userId, input.userId)) })
+      if (!row) return { kind: 'not_found' as const }
+      if (row.status === 'awaiting_approval') {
+        await db.update(actions).set({ status: 'expired' }).where(and(eq(actions.id, row.id), eq(actions.status, 'awaiting_approval')))
+        return { kind: 'expired' as const, action: row }
+      }
+      return { kind: 'already_decided' as const, action: row }
     },
 
     async getUserById(id: string): Promise<User | null> {

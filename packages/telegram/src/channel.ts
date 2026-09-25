@@ -1,4 +1,4 @@
-import { splitText, type Channel, type InboundMessage } from '@wa/core'
+import { approvalButtonId, splitText, type Channel, type InboundMessage } from '@wa/core'
 import { TelegramApiError, type TelegramClient } from './client.js'
 import { MAX_TEXT_LENGTH, toPlainText, toTelegramHtml } from './format.js'
 
@@ -14,7 +14,7 @@ export interface TelegramChannelDeps {
 
 /** Telegram as a `Channel`. No service window: a bot may reply any time the user has started it. */
 export function createTelegramChannel({ client, botId, onTypingError = () => {} }: TelegramChannelDeps): Channel {
-  return {
+  const channel: Channel = {
     name: 'telegram',
     async sendText(chatId, markdown) {
       // Returned ids are `<botId>:<chatId>:<message_id>`, matching inbound ids.
@@ -42,5 +42,28 @@ export function createTelegramChannel({ client, botId, onTypingError = () => {} 
       const timer = setInterval(tick, TYPING_REFRESH_MS)
       return () => clearInterval(timer)
     },
+    async sendApproval(chatId, card) {
+      const buttons = [
+        [
+          { text: `✅ ${card.approveLabel}`, data: approvalButtonId('approve', card.actionId) },
+          { text: '✖ Cancel', data: approvalButtonId('cancel', card.actionId) },
+        ],
+      ]
+      const html = toTelegramHtml(card.preview)
+      if (html.length <= MAX_TEXT_LENGTH) {
+        return [`${botId}:${chatId}:${(await client.sendMessage(chatId, html, { html: true, buttons })).messageId}`]
+      }
+      // Too long for one message: the full text first, then a short card with the buttons.
+      const ids = await channel.sendText(chatId, card.preview)
+      const title = toTelegramHtml(`**${card.title}**: approve the message above?`)
+      ids.push(`${botId}:${chatId}:${(await client.sendMessage(chatId, title, { html: true, buttons })).messageId}`)
+      return ids
+    },
+    async closeApproval(message, outcome) {
+      // Best effort: the decision is already recorded, and these only tidy the chat.
+      if (message.callbackId) await client.answerCallbackQuery(message.callbackId, outcome).catch(() => {})
+      await client.removeButtons(message.from, message.platformMessageId).catch(() => {})
+    },
   }
+  return channel
 }

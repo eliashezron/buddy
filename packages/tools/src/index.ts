@@ -6,6 +6,7 @@ import { deleteCalendarEvent } from './delete-calendar-event.js'
 import { fetchPage } from './fetch-page.js'
 import { gmailCreateDraft } from './gmail-create-draft.js'
 import { gmailRead } from './gmail-read.js'
+import { gmailSendEmail } from './gmail-send-email.js'
 import { gmailSearch } from './gmail-search.js'
 import { manageConnections } from './manage-connections.js'
 import { undoLastAction } from './undo-last-action.js'
@@ -18,6 +19,7 @@ export { calendarListEvents } from './calendar-list-events.js'
 export { createCalendarEvent } from './create-calendar-event.js'
 export { deleteCalendarEvent } from './delete-calendar-event.js'
 export { buildRawEmail, gmailCreateDraft } from './gmail-create-draft.js'
+export { gmailSendEmail } from './gmail-send-email.js'
 export { extractEmailText, gmailRead } from './gmail-read.js'
 export { gmailSearch } from './gmail-search.js'
 export { GoogleApiError } from './google-api.js'
@@ -41,6 +43,7 @@ export function createTools(deps: ToolDeps): AnyTool[] {
       gmailSearch,
       gmailRead,
       gmailCreateDraft,
+      gmailSendEmail,
       manageConnections,
     )
   return tools

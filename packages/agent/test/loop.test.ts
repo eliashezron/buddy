@@ -128,7 +128,7 @@ describe('runAgent', () => {
     expect(String(requests[0]!.system)).toContain("The user's Telegram name is Elias.")
   })
 
-  it('never executes money or outbound tools; records the attempt as cancelled', async () => {
+  it('never executes money tools (no PIN step yet); records the attempt as cancelled', async () => {
     const { log, events, rows } = recordingActions()
     const { createMessage } = scripted([
       message('tool_use', [toolUse('t1', 'send_money', { to: '0770123456', amount: 2400000 })]),
@@ -138,6 +138,61 @@ describe('runAgent', () => {
     expect(events).not.toContain('execute:send_money')
     expect(rows.get('act_1')).toMatchObject({ tool: 'send_money', risk: 'money', status: 'cancelled' })
     expect(out.toolCalls).toEqual([expect.objectContaining({ name: 'send_money', outcome: 'blocked' })])
+  })
+
+  it('outbound tools never execute: the row waits for approval for 15 minutes and the model is told nothing was sent', async () => {
+    const { log, events, rows } = recordingActions()
+    const send = defineTool({
+      name: 'send_email',
+      description: 'send',
+      risk: 'outbound',
+      input: z.object({ to: z.string() }),
+      preview: ({ to }) => `Send to ${to}`,
+      async execute() {
+        events.push('execute:send_email')
+        return { ok: true }
+      },
+    })
+    const { createMessage, requests } = scripted([
+      message('tool_use', [toolUse('t1', 'send_email', { to: 'kato@example.com' })]),
+      message('end_turn', [text('Ready for you to approve.')]),
+    ])
+    const before = Date.now()
+    const out = await runAgent({ ...base, createMessage, tools: [send] as AnyTool[], actions: log, message: { text: 'email kato' } })
+    expect(events).toEqual(['create:send_email:pending', 'update:send_email:awaiting_approval'])
+    const row = rows.get('act_1') as { status: string; approvalExpiresAt?: Date }
+    expect(row.status).toBe('awaiting_approval')
+    expect(row.approvalExpiresAt!.getTime() - before).toBeGreaterThanOrEqual(15 * 60_000)
+    expect(row.approvalExpiresAt!.getTime() - before).toBeLessThan(15 * 60_000 + 5_000)
+    expect(out.approvalRequests).toEqual(['act_1'])
+    expect(out.toolCalls).toEqual([expect.objectContaining({ name: 'send_email', outcome: 'awaiting_approval', input: { to: 'kato@example.com' } })])
+    const toolResult = JSON.parse(String((requests[1]!.messages.at(-1)!.content as { content: string }[])[0]!.content))
+    expect(toolResult).toMatchObject({ status: 'awaiting_approval', sent: false })
+  })
+
+  it('checks an outbound tool\'s permissions before asking for approval', async () => {
+    const { log, events, rows } = recordingActions()
+    const send = defineTool({
+      name: 'send_email',
+      description: 'send',
+      risk: 'outbound',
+      input: z.object({ to: z.string() }),
+      requires: () => ['gmail.compose'],
+      preview: ({ to }) => `Send to ${to}`,
+      async execute() {
+        events.push('execute:send_email')
+        return { ok: true }
+      },
+    })
+    const { createMessage } = scripted([
+      message('tool_use', [toolUse('t1', 'send_email', { to: 'kato@example.com' })]),
+      message('end_turn', [text('A link is coming.')]),
+    ])
+    const out = await runAgent({ ...base, createMessage, tools: [send] as AnyTool[], actions: log, message: { text: 'email kato' } })
+    expect(events).not.toContain('execute:send_email')
+    expect(rows.get('act_1')).toMatchObject({ status: 'failed', error: 'needs_connection:not_connected' })
+    expect(out.approvalRequests).toEqual([])
+    expect(out.connectionRequests).toEqual(['gmail.compose'])
   })
 
   it('rejects invalid tool input without creating a row', async () => {

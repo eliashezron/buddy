@@ -9,7 +9,12 @@ export interface WhatsAppClient {
   sendText(to: string, body: string, opts?: { replyToId?: string; previewUrl?: boolean }): Promise<{ messageId: string }>
   /** Marks an inbound message read and, optionally, shows the typing indicator while we work. */
   markRead(messageId: string, opts?: { typing?: boolean }): Promise<void>
+  /** Interactive reply buttons: body ≤ 1024 chars, up to 3 buttons, titles ≤ 20 chars, ids ≤ 256. */
+  sendButtons(to: string, body: string, buttons: { id: string; title: string }[]): Promise<{ messageId: string }>
 }
+
+export const BUTTON_BODY_MAX = 1024
+export const BUTTON_TITLE_MAX = 20
 
 export class GraphApiError extends ChannelSendError {
   override name = 'GraphApiError'
@@ -65,6 +70,23 @@ export class CloudApiClient implements WhatsAppClient {
     return { messageId: parsed.data.messages[0]!.id }
   }
 
+  async sendButtons(to: string, body: string, buttons: { id: string; title: string }[]) {
+    const json = await this.post('/messages', {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'interactive',
+      interactive: {
+        type: 'button',
+        body: { text: body },
+        action: { buttons: buttons.map((b) => ({ type: 'reply', reply: { id: b.id, title: b.title } })) },
+      },
+    })
+    const parsed = sendResponseSchema.safeParse(json)
+    if (!parsed.success) throw new GraphApiError(200, undefined, 'unexpected send response shape')
+    return { messageId: parsed.data.messages[0]!.id }
+  }
+
   async markRead(messageId: string, opts: { typing?: boolean } = {}) {
     const payload: Record<string, unknown> = { messaging_product: 'whatsapp', status: 'read', message_id: messageId }
     if (opts.typing) payload.typing_indicator = { type: 'text' }
@@ -107,6 +129,7 @@ export class CloudApiClient implements WhatsAppClient {
 export type RecordedCall =
   | { method: 'sendText'; to: string; body: string; replyToId?: string }
   | { method: 'markRead'; messageId: string; typing: boolean }
+  | { method: 'sendButtons'; to: string; body: string; buttons: { id: string; title: string }[] }
 
 /** Records every outbound call. Use this in all tests and in `pnpm replay`; nothing hits Graph. */
 export class FakeWhatsAppClient implements WhatsAppClient {
@@ -122,6 +145,11 @@ export class FakeWhatsAppClient implements WhatsAppClient {
 
   async markRead(messageId: string, opts: { typing?: boolean } = {}) {
     this.calls.push({ method: 'markRead', messageId, typing: opts.typing ?? false })
+  }
+
+  async sendButtons(to: string, body: string, buttons: { id: string; title: string }[]) {
+    this.calls.push({ method: 'sendButtons', to, body, buttons })
+    return { messageId: `wamid.FAKE_${++this.seq}` }
   }
 
   get sent() {
