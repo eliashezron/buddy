@@ -76,10 +76,22 @@ Telegram only accepts HTTPS on ports 443, 80, 88 or 8443.
 | 429 | Flood control | Wait `parameters.retry_after`, then retry |
 | 5xx / network | Telegram-side problem | Retry with backoff; the queue retries the job |
 
+## Approval buttons
+
+Approval cards use an inline keyboard (`reply_markup.inline_keyboard`) with
+`callback_data` = `approve:<action id>` / `cancel:<action id>` (44 bytes; the limit is 64).
+We subscribe to `allowed_updates: ['message', 'callback_query']` in both polling and
+webhook mode; production picks this up when it re-registers the webhook on boot.
+
+A press arrives as `callback_query`. The parser accepts it only in a private chat and only
+when `from.id` equals `message.chat.id` (the chat's own user), and turns it into an
+`InboundMessage` of type `button` with `reply.id` = the payload and `callbackId`. After a
+decision the worker calls `answerCallbackQuery` (stops the spinner) and
+`editMessageReplyMarkup` with an empty keyboard (removes the buttons). See
+`docs/connectors.md#approvals-outbound-actions` for the full flow.
+
 ## Not yet
 
 - Voice notes, photos and documents get the same "not yet" reply as on WhatsApp.
   Files come from `getFile` + `https://api.telegram.org/file/bot<token>/<path>` (limit 20 MB).
-- Inline keyboards (`callback_query`) for approvals, the Telegram equivalent of
-  WhatsApp's reply buttons.
 - Linking one person's Telegram and WhatsApp accounts. Today they are separate users.

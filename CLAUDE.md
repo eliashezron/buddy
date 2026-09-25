@@ -92,7 +92,10 @@ defineTool({
   name: 'create_calendar_event',
   risk: 'low_write',          // read | low_write | outbound | money
   input: z.object({ /* ... */ }),
-  preview: (input) => string, // shown to the user before an approved action runs
+  preview: (input) => string, // shown to the user before an approved action runs; for
+                              // outbound/money it IS the approval card: show everything sent
+  title: (input) => string,   // optional: one line for buttons and confirmations
+  requires: (input) => Capability[], // optional: checked before asking for approval
   execute: async (input, ctx) => result,
 })
 ```

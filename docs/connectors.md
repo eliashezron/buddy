@@ -30,16 +30,45 @@ Later: "book focus time Friday 2pm"
 | `delete_calendar_event` | low_write, undoable 10 min | calendar write. Own events only, no notifications. Events with other guests are refused (deleting them notifies people). Undo restores the same event. |
 | `gmail_search`, `gmail_read` | read | Gmail read (`gmail.readonly`) |
 | `gmail_create_draft` | low_write, undoable 10 min | Gmail compose (`gmail.compose`). Saves a draft (new or a threaded reply); never sends. Undo deletes the draft. |
+| `gmail_send_email` | **outbound**, needs approval | Gmail compose (+ read to thread a reply). Sends only after the user presses Send on the card. |
 | `manage_connections` | low_write | none. Lists access or disconnects (revokes at Google). |
 | `undo_last_action` | low_write | none. Reverses the last undoable change within 10 minutes. |
 
-Sending email, inviting people and deleting events with guests are `outbound`: they need
-the approval-buttons flow (not built yet), so the agent saves drafts instead.
-
 Google has no drafts-only scope: `gmail.compose` also permits sending, and Google's consent
-screen says so ("manage drafts and send emails"). Sending is still blocked by the policy
-gate (`outbound` needs approval), and no tool calls the send endpoint. Like `gmail.readonly`,
-`gmail.compose` is a restricted scope for Google app verification.
+screen says so ("manage drafts and send emails"). Sending is gated by the approval flow
+below, not by the scope. Like `gmail.readonly`, `gmail.compose` is a restricted scope for
+Google app verification. Calendar invitations and deleting events with guests are also
+`outbound` and will use the same flow; they aren't built yet.
+
+## Approvals (`outbound` actions)
+
+```
+User: "email kato@example.com that I'm running late"
+  → agent calls gmail_send_email
+  → policy gate: outbound → checks Gmail access first (else: connect link, no card)
+  → actions row: awaiting_approval, approval_expires_at = now + 15 min, input stored
+  → model is told "nothing was sent; a card is coming" and replies in one line
+  → worker (not the model) sends the card: the full email + [✅ Send] [✖ Cancel]
+User taps Send
+  → button payload approve:<action id>  (Telegram callback_query / WhatsApp button_reply)
+  → one UPDATE: same user AND awaiting_approval AND not expired → running (decided_at set)
+  → execute the *stored* input → succeeded / failed → "✅ Done: Email to kato@…"
+```
+
+- **Only a button press approves.** Typed text, even `approve:<id>`, goes to the agent
+  as a normal message. Forwarded or pasted content can't press a button.
+- **The model can't approve or change anything** after proposing: execution uses the row's
+  input, validated again with the tool's schema.
+- **Once only.** The claim is a single conditional UPDATE, so a double tap or a
+  redelivered press sends once (a Postgres test races four taps). A failure after the
+  claim is never retried automatically: if sending throws, the user is told it may not
+  have gone out.
+- **Only its user.** A press for someone else's action is "no longer works"; on Telegram,
+  presses by anyone but the private chat's owner are dropped at parse time.
+- **Expiry.** After 15 minutes the action is marked `expired` and nothing is sent.
+- On Telegram the buttons are removed after a decision. WhatsApp reply buttons can't be
+  removed; a later tap gets "That was already done / cancelled".
+- `money` stays blocked: payments also need a PSP PIN step and spend limits.
 
 **Security**
 - Refresh and access tokens are encrypted with AES-256-GCM. Each ciphertext is bound
@@ -98,6 +127,11 @@ points at `localhost:3000`, which a phone can't reach.
 | "Disconnect Google" | Access revoked (see https://myaccount.google.com/permissions). The next calendar question asks again. |
 | Open a link twice, or after 15 min | "This link has expired / already been used". |
 | Tap Cancel on Google's screen | "No problem, I haven't connected anything." |
+| "Email <your other address> that the test worked" | One line saying it's ready, then a card with the full email and Send / Cancel. Nothing in Sent yet. |
+| Tap **Send** | "✅ Done: Email to …". It's in Gmail Sent. The buttons disappear (Telegram). |
+| Ask again, tap **Cancel** | "Cancelled. Nothing was sent." |
+| Ask again, wait 15 min, tap Send | "That request expired…". Nothing sent. |
+| Type `approve` instead of tapping | Treated as a normal message; nothing sent. |
 
 ## Before production
 

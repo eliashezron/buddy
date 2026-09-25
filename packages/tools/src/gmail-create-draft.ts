@@ -1,4 +1,4 @@
-import { defineTool } from '@wa/core'
+import { defineTool, type ToolContext } from '@wa/core'
 import { z } from 'zod'
 import { googleApi } from './google-api.js'
 
@@ -35,6 +35,47 @@ export function buildRawEmail(m: { to: string[]; cc?: string[]; subject: string;
   return Buffer.from(`${headers.join('\r\n')}\r\n\r\n${body}`, 'utf8').toString('base64url')
 }
 
+/** Shared by drafts and sending: who, what, and optionally which email it replies to. */
+export const emailInput = z.object({
+  to: z.array(z.email()).min(1).max(10).describe('Recipient addresses, e.g. ["kato@example.com"]'),
+  cc: z.array(z.email()).max(10).optional(),
+  subject: z.string().max(250),
+  body: z.string().min(1).max(20_000).describe('Plain text'),
+  replyToEmailId: z.string().max(200).optional().describe('Gmail message id to reply to, from gmail_search'),
+})
+export type EmailInput = z.infer<typeof emailInput>
+
+/**
+ * Builds the raw message. For a reply, reads the original's Message-ID and References
+ * (needs Gmail read) so it threads in the recipient's mail too.
+ */
+export async function composeEmail({ to, cc, subject, body, replyToEmailId }: EmailInput, ctx: ToolContext) {
+  let thread: { threadId: string; inReplyTo?: string; references?: string } | undefined
+  if (replyToEmailId) {
+    const params = new URLSearchParams({ format: 'metadata' })
+    for (const h of ['Message-ID', 'References']) params.append('metadataHeaders', h)
+    const original = await googleApi(
+      ctx,
+      ['gmail.read'],
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(replyToEmailId)}?${params}`,
+      { schema: replyToSchema },
+    )
+    const header = (name: string) => original.payload.headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value
+    const messageId = header('Message-ID')
+    const references = [header('References'), messageId].filter(Boolean).join(' ')
+    thread = { threadId: original.threadId, ...(messageId ? { inReplyTo: messageId } : {}), ...(references ? { references } : {}) }
+  }
+  const raw = buildRawEmail({
+    to,
+    ...(cc ? { cc } : {}),
+    subject,
+    body,
+    ...(thread?.inReplyTo ? { inReplyTo: thread.inReplyTo } : {}),
+    ...(thread?.references ? { references: thread.references } : {}),
+  })
+  return { raw, ...(thread ? { threadId: thread.threadId } : {}) }
+}
+
 /**
  * low_write: saves a draft in the user's Gmail. Nothing is sent; the user reviews and
  * sends it from Gmail. Sending is `outbound` and waits for the approval flow.
@@ -48,44 +89,12 @@ export const gmailCreateDraft = defineTool({
     "recipient's address, ask. To reply to an email, pass its id from gmail_search as replyToEmailId. Write in " +
     "the user's voice, short and plain. The user can undo for 10 minutes. Asks the user to connect Gmail if needed.",
   risk: 'low_write',
-  input: z.object({
-    to: z.array(z.email()).min(1).max(10).describe('Recipient addresses, e.g. ["kato@example.com"]'),
-    cc: z.array(z.email()).max(10).optional(),
-    subject: z.string().max(250),
-    body: z.string().min(1).max(20_000).describe('Plain text'),
-    replyToEmailId: z.string().max(200).optional().describe('Gmail message id to reply to, from gmail_search'),
-  }),
+  input: emailInput,
   preview: ({ to, subject }) => `Save a draft to ${to.join(', ')}: "${subject}"`,
-  async execute({ to, cc, subject, body, replyToEmailId }, ctx) {
-    let thread: { threadId: string; inReplyTo?: string; references?: string } | undefined
-    if (replyToEmailId) {
-      const params = new URLSearchParams({ format: 'metadata' })
-      for (const h of ['Message-ID', 'References']) params.append('metadataHeaders', h)
-      const original = await googleApi(
-        ctx,
-        ['gmail.read'],
-        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(replyToEmailId)}?${params}`,
-        { schema: replyToSchema },
-      )
-      const header = (name: string) => original.payload.headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value
-      const messageId = header('Message-ID')
-      const references = [header('References'), messageId].filter(Boolean).join(' ')
-      thread = { threadId: original.threadId, ...(messageId ? { inReplyTo: messageId } : {}), ...(references ? { references } : {}) }
-    }
-
-    const raw = buildRawEmail({
-      to,
-      ...(cc ? { cc } : {}),
-      subject,
-      body,
-      ...(thread?.inReplyTo ? { inReplyTo: thread.inReplyTo } : {}),
-      ...(thread?.references ? { references: thread.references } : {}),
-    })
-    const draft = await googleApi(ctx, ['gmail.compose'], DRAFTS_URL, {
-      method: 'POST',
-      schema: draftSchema,
-      body: { message: { raw, ...(thread ? { threadId: thread.threadId } : {}) } },
-    })
+  async execute(input, ctx) {
+    const { to, subject } = input
+    const message = await composeEmail(input, ctx)
+    const draft = await googleApi(ctx, ['gmail.compose'], DRAFTS_URL, { method: 'POST', schema: draftSchema, body: { message } })
     return {
       ok: true as const,
       draftId: draft.id,

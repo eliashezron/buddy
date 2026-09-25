@@ -95,11 +95,17 @@ const GOOGLE_CAPS: Record<string, Capability> = {
 function stubbed(tool: AnyTool, calls: string[], c: EvalCase): AnyTool {
   return {
     ...tool,
-    execute: async () => {
+    execute: async (input: unknown) => {
       calls.push(tool.name)
       const cap = GOOGLE_CAPS[tool.name]
       if (c.notConnected && cap) throw new NeedsConnectionError([cap], 'not_connected')
-      return c.stubs?.[tool.name] ?? STUB_RESULTS[tool.name] ?? { ok: true }
+      const stub = c.stubs?.[tool.name] ?? STUB_RESULTS[tool.name] ?? { ok: true }
+      // A draft stub that names other recipients reads like a mistake and invites an undo.
+      if (tool.name === 'gmail_create_draft' && typeof stub === 'object') {
+        const { to, subject } = input as { to: string[]; subject: string }
+        return { ...stub, to, subject }
+      }
+      return stub
     },
   }
 }
@@ -146,7 +152,8 @@ async function runCase(c: EvalCase): Promise<Outcome> {
     runId: `eval_${c.id}`,
     user: { id: 'eval', timezone: 'Africa/Kampala', name: 'Elias' },
     channel: c.channel ?? 'whatsapp',
-    services: noServices(),
+    // Connected unless the case says otherwise, so outbound tools reach the approval step.
+    services: c.notConnected ? noServices() : { ...noServices(), credentials: { accessToken: async () => 'eval-token' } },
     history: c.history ?? [],
     message: { text: c.message, ...(c.forwarded ? { forwarded: true } : {}) },
   })
