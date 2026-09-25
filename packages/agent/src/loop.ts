@@ -94,20 +94,26 @@ export function isTransientModelError(err: unknown): boolean {
 export const REFUSAL_REPLY = "Sorry, I can't help with that one."
 export const FAILURE_REPLY = "Sorry, something went wrong on my side. Please try again in a moment."
 
-const NUMERIC_BOUNDS = ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf'] as const
-
 /**
- * Strict tool use rejects numeric bounds (400: "For 'integer' type, properties maximum,
- * minimum are not supported"). Move them into the description so the model still sees
- * the range; zod enforces it before any tool runs.
+ * Keywords strict tool use doesn't support: numeric bounds, string length and array
+ * length (400: "For 'array' type, property 'maxItems' is not supported"). Only
+ * `minItems` of 0 or 1 is allowed. They move into the description so the model still
+ * sees the limit; zod enforces it before any tool runs.
  */
+const UNSUPPORTED = ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'maxItems'] as const
+
+function unsupported(key: string, value: unknown): boolean {
+  if (key === 'minItems') return typeof value === 'number' && value > 1
+  return (UNSUPPORTED as readonly string[]).includes(key)
+}
+
 export function toStrictSchema(node: unknown): unknown {
   if (Array.isArray(node)) return node.map(toStrictSchema)
   if (!node || typeof node !== 'object') return node
   const out: Record<string, unknown> = {}
   const bounds: string[] = []
   for (const [key, value] of Object.entries(node)) {
-    if ((NUMERIC_BOUNDS as readonly string[]).includes(key)) bounds.push(`${key} ${String(value)}`)
+    if (unsupported(key, value)) bounds.push(`${key} ${String(value)}`)
     else out[key] = toStrictSchema(value)
   }
   if (bounds.length) {
