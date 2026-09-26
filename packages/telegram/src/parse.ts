@@ -68,10 +68,12 @@ function toInbound(m: TelegramMessage, botId: string): InboundMessage {
     const value = m[key]
     if (!value) continue
     // Photos arrive as several sizes; the last is the largest.
-    const file = (Array.isArray(value) ? value.at(-1) : value) as { file_id: string; mime_type?: string }
+    const file = (Array.isArray(value) ? value.at(-1) : value) as { file_id: string; mime_type?: string; file_size?: number; duration?: number }
     out.type = kind
     out.media = { kind, id: file.file_id }
     if (file.mime_type) out.media.mimeType = file.mime_type
+    if (file.duration !== undefined) out.media.durationSec = file.duration
+    if (file.file_size !== undefined) out.media.sizeBytes = file.file_size
     if (key === 'voice') out.media.voice = true
     if (m.caption) out.media.caption = m.caption
     return out

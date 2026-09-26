@@ -1,7 +1,7 @@
 {
   "_fixture": {
     "name": "telegram-voice",
-    "description": "Voice note. Expected until F2 ships: polite not-yet reply, no agent run.",
+    "description": "Voice note. With ELEVENLABS_API_KEY set it is transcribed and runs the agent (F2); without it (e.g. pnpm replay), a polite not-yet reply and no agent run.",
     "expected": {
       "agent_run": false
     }

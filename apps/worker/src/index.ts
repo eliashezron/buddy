@@ -18,6 +18,7 @@ import { createTools } from '@wa/tools'
 import { BotApiClient, botIdFromToken, createTelegramChannel } from '@wa/telegram'
 import { CloudApiClient, createWhatsAppChannel } from '@wa/whatsapp'
 import { createResponsesMessage, type CreateMessage } from '@wa/agent'
+import { createElevenLabsSpeechToText } from '@wa/speech'
 import { createInboundHandler, type Connectors } from './inbound.js'
 
 const config = loadConfigOrExit(envSchema)
@@ -40,6 +41,8 @@ const createMessage: CreateMessage =
   config.LLM_PROVIDER === 'opencode'
     ? createResponsesMessage({ apiKey: config.OPENCODE_API_KEY!, baseUrl: config.OPENCODE_BASE_URL })
     : (params, opts) => anthropic.beta.messages.create(params, opts)
+// Voice notes: on when an ElevenLabs key is configured.
+const speech = config.ELEVENLABS_API_KEY ? createElevenLabsSpeechToText({ apiKey: config.ELEVENLABS_API_KEY, model: config.STT_MODEL }) : undefined
 const channels: Partial<Record<ChannelName, Channel>> = {
   whatsapp: createWhatsAppChannel({
     client: new CloudApiClient({
@@ -102,6 +105,7 @@ const handle = createInboundHandler({
   logger,
   defaultTimezone: config.DEFAULT_TIMEZONE,
   ...(connectors ? { connectors } : {}),
+  ...(speech ? { speech } : {}),
 })
 
 // BullMQ workers need maxRetriesPerRequest: null (blocking commands).
@@ -132,7 +136,7 @@ const maintenance = new Worker(
 )
 maintenance.on('error', (err) => logger.error({ err }, 'maintenance worker error'))
 
-logger.info({ queues: [QUEUES.inbound, QUEUES.maintenance], channels: Object.keys(channels), google: Boolean(connectors), model: config.AGENT_MODEL, provider: config.LLM_PROVIDER }, 'worker started')
+logger.info({ queues: [QUEUES.inbound, QUEUES.maintenance], channels: Object.keys(channels), google: Boolean(connectors), model: config.AGENT_MODEL, provider: config.LLM_PROVIDER, voice: Boolean(speech) }, 'worker started')
 
 /** Stay under the usual SIGTERM→SIGKILL window of hosting platforms (often 30 s). */
 const SHUTDOWN_GRACE_MS = 15_000

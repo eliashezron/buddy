@@ -1,4 +1,4 @@
-import { approvalButtonId, splitText, type Channel, type InboundMessage } from '@wa/core'
+import { approvalButtonId, MediaTooLargeError, splitText, type Channel, type InboundMessage } from '@wa/core'
 import { TelegramApiError, type TelegramClient } from './client.js'
 import { MAX_TEXT_LENGTH, toPlainText, toTelegramHtml } from './format.js'
 
@@ -68,6 +68,14 @@ export function createTelegramChannel({ client, botId, onTypingError = () => {} 
         if (!(err instanceof TelegramApiError && err.errorCode === 400)) throw err
         return channel.sendText(chatId, link.text.includes(link.url) ? link.text : `${link.text}\n${link.url}`)
       }
+    },
+    async downloadMedia(message, { maxBytes }) {
+      if (!message.media) throw new Error('message has no media')
+      // Check the size Telegram reported before downloading anything.
+      if ((message.media.sizeBytes ?? 0) > maxBytes) throw new MediaTooLargeError(`media is ${message.media.sizeBytes} bytes`)
+      const file = await client.downloadFile(message.media.id)
+      if (file.data.length > maxBytes) throw new MediaTooLargeError(`media is ${file.data.length} bytes`)
+      return { data: file.data, mimeType: message.media.mimeType ?? 'audio/ogg' }
     },
     async closeApproval(message, outcome) {
       // Best effort: the decision is already recorded, and these only tidy the chat.
