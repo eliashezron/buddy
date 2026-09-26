@@ -8,6 +8,8 @@ import { createPresentation } from './create-presentation.js'
 import { createSpreadsheet } from './create-spreadsheet.js'
 import { deleteCalendarEvent } from './delete-calendar-event.js'
 import { driveRead } from './drive-read.js'
+import { editDocument } from './edit-document.js'
+import { editSpreadsheet } from './edit-spreadsheet.js'
 import { driveSearch } from './drive-search.js'
 import { fetchPage } from './fetch-page.js'
 import { gmailCreateDraft } from './gmail-create-draft.js'
@@ -27,9 +29,11 @@ export { calendarListEvents } from './calendar-list-events.js'
 export { createCalendarEvent } from './create-calendar-event.js'
 export { deleteCalendarEvent } from './delete-calendar-event.js'
 export { createDocument, markdownToHtml, multipartBody } from './create-document.js'
-export { cellValue, createSpreadsheet } from './create-spreadsheet.js'
+export { cellValue, createSpreadsheet, userEnteredCell } from './create-spreadsheet.js'
 export { createPresentation, slideRequests } from './create-presentation.js'
 export { driveRead } from './drive-read.js'
+export { editDocument } from './edit-document.js'
+export { editSpreadsheet } from './edit-spreadsheet.js'
 export { driveSearch } from './drive-search.js'
 export { fileIdFrom } from './google-drive.js'
 export { buildRawEmail, gmailCreateDraft } from './gmail-create-draft.js'
@@ -70,6 +74,8 @@ export function createTools(deps: ToolDeps): AnyTool[] {
       createDocument,
       createSpreadsheet,
       createPresentation,
+      editDocument,
+      editSpreadsheet,
       shareFile,
       manageConnections,
     )

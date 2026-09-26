@@ -19,6 +19,9 @@ const DRIVE_READ = 'https://www.googleapis.com/auth/drive.readonly'
 // Only files this app created (non-sensitive). Enough for creating Docs, Sheets and Slides
 // and for undoing that; editing the user's other files would need a broader scope.
 const DRIVE_FILE = 'https://www.googleapis.com/auth/drive.file'
+// Edit any Doc / Sheet the user can access. Sensitive, not restricted like full `drive`.
+const DOCS = 'https://www.googleapis.com/auth/documents'
+const SHEETS = 'https://www.googleapis.com/auth/spreadsheets'
 
 /** Narrowest scope that grants each capability (PRD: request the narrowest scopes possible). */
 export const CAPABILITY_SCOPE: Record<Capability, string> = {
@@ -28,6 +31,8 @@ export const CAPABILITY_SCOPE: Record<Capability, string> = {
   'gmail.compose': GMAIL_COMPOSE,
   'drive.read': DRIVE_READ,
   'drive.create': DRIVE_FILE,
+  'docs.edit': DOCS,
+  'sheets.edit': SHEETS,
 }
 
 /** Every Google capability, offered together on the consent screen. */
@@ -41,6 +46,8 @@ const SATISFIED_BY: Record<Capability, string[]> = {
   'gmail.compose': [GMAIL_COMPOSE],
   'drive.read': [DRIVE_READ],
   'drive.create': [DRIVE_FILE],
+  'docs.edit': [DOCS],
+  'sheets.edit': [SHEETS],
 }
 
 export function grants(scopes: readonly string[], capability: Capability): boolean {

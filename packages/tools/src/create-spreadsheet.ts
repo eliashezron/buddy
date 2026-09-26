@@ -18,6 +18,18 @@ const MAX_DIGITS = 15
 
 type CellValue = { numberValue: number } | { formulaValue: string } | { stringValue: string }
 
+/**
+ * A cell for the values API with USER_ENTERED, which parses input like the Sheets UI does.
+ * Network formulas and numbers that would lose digits are prefixed with ' so Sheets keeps
+ * them as text; everything else is parsed as usual.
+ */
+export function userEnteredCell(raw: string): string {
+  const s = raw.trim()
+  if (s.startsWith('=') && NETWORK_FUNCTIONS.test(s)) return `'${raw}`
+  if (/^[+-]?\d[\d,.]*$/.test(s) && !(NUMBER.test(s) && s.replace(/\D/g, '').length <= MAX_DIGITS)) return `'${raw}`
+  return raw
+}
+
 /** A cell as Sheets stores it: numbers as numbers, safe formulas as formulas, the rest as text. */
 export function cellValue(raw: string): CellValue {
   const s = raw.trim()
