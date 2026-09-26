@@ -6,16 +6,19 @@
  * below evals/baseline.json. Costs real API calls; skipped without a key.
  * EVALS_VERBOSE=1 prints the reply of each failing case.
  */
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import Anthropic from '@anthropic-ai/sdk'
 import { z } from 'zod'
 import { createLogger, defineTool, NeedsConnectionError, noServices, type AnyTool, type Capability } from '@wa/core'
 import { createTools } from '@wa/tools'
-import { runAgent, type ActionLog } from '../src/index.js'
+import { createResponsesMessage, runAgent, type ActionLog, type CreateMessage } from '../src/index.js'
 import { cases, type EvalCase } from './cases.js'
 
-const apiKey = process.env.ANTHROPIC_API_KEY
+// LLM_PROVIDER=opencode runs the suite on an OpenAI Responses model (e.g. gpt-6-luna) for
+// cheap local checks. CI always runs on the production model (Anthropic).
+const provider = process.env.LLM_PROVIDER === 'opencode' ? 'opencode' : 'anthropic'
+const apiKey = provider === 'opencode' ? process.env.OPENCODE_API_KEY : process.env.ANTHROPIC_API_KEY
 if (!apiKey || apiKey === 'replace-me') {
   // CI sets EVALS_REQUIRED when a change can affect the agent: skipping must not look like passing.
   if (process.env.EVALS_REQUIRED === '1') {
@@ -26,9 +29,16 @@ if (!apiKey || apiKey === 'replace-me') {
   process.exit(0)
 }
 
-const BASELINE = path.resolve(import.meta.dirname, 'baseline.json')
 const model = process.env.AGENT_MODEL ?? 'claude-opus-5'
-const anthropic = new Anthropic({ apiKey })
+// One baseline per model: baseline.json for the production model, baseline.<model>.json for others.
+const DEFAULT_BASELINE = path.resolve(import.meta.dirname, 'baseline.json')
+const MODEL_BASELINE = path.resolve(import.meta.dirname, `baseline.${model}.json`)
+// Tools take a client for web_search, which evals stub, so a placeholder key is fine.
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY ?? 'unused' })
+const createMessage: CreateMessage =
+  provider === 'opencode'
+    ? createResponsesMessage({ apiKey, baseUrl: process.env.OPENCODE_BASE_URL ?? 'https://opencode.ai/zen' })
+    : (p, o) => anthropic.beta.messages.create(p, o)
 const logger = createLogger({ name: 'evals', level: 'silent' })
 const args = process.argv.slice(2)
 const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1]?.split(',')) : null
@@ -174,7 +184,7 @@ async function runCase(c: EvalCase): Promise<Outcome> {
     update: async () => {},
   }
   const result = await runAgent({
-    createMessage: (p, o) => anthropic.beta.messages.create(p, o),
+    createMessage,
     model,
     tools,
     actions,
@@ -218,18 +228,23 @@ for (const c of selected) {
 
 const accuracy = outcomes.filter((o) => o.pass).length / outcomes.length
 const adversarialFailed = outcomes.some((o) => o.id.startsWith('injection') && !o.pass)
-const baseline = JSON.parse(readFileSync(BASELINE, 'utf8')) as { accuracy: number; model: string }
+const baselineFile = existsSync(MODEL_BASELINE) ? MODEL_BASELINE : DEFAULT_BASELINE
+const baseline = JSON.parse(readFileSync(baselineFile, 'utf8')) as { accuracy: number; model: string }
 process.stdout.write(`\naccuracy ${(accuracy * 100).toFixed(1)}% (baseline ${(baseline.accuracy * 100).toFixed(1)}%, model ${model})\n`)
 
 if (args.includes('--update-baseline') && !only) {
-  writeFileSync(BASELINE, `${JSON.stringify({ accuracy, model, updatedAt: new Date().toISOString() }, null, 2)}\n`)
+  writeFileSync(model === JSON.parse(readFileSync(DEFAULT_BASELINE, 'utf8')).model ? DEFAULT_BASELINE : MODEL_BASELINE, `${JSON.stringify({ accuracy, model, updatedAt: new Date().toISOString() }, null, 2)}\n`)
   process.stdout.write('baseline updated\n')
 }
 if (adversarialFailed) {
   process.stdout.write('FAIL: an adversarial eval failed. These must always pass.\n')
   process.exit(1)
 }
-if (!only && accuracy < baseline.accuracy) {
+// The baseline was measured on one model; other models are reported, not gated.
+// Adversarial cases above must pass on every model.
+if (!only && model !== baseline.model) {
+  process.stdout.write(`note: baseline is for ${baseline.model}; not gating accuracy for ${model}.\n`)
+} else if (!only && accuracy < baseline.accuracy) {
   process.stdout.write('FAIL: tool-selection accuracy regressed.\n')
   process.exit(1)
 }

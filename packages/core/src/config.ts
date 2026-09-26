@@ -21,8 +21,14 @@ const baseEnvSchema = z.object({
   // Pinned on purpose (docs/whatsapp-notes.md §3); no default.
   GRAPH_API_VERSION: z.string().regex(/^v\d+\.\d+$/, 'expected a version like v23.0'),
 
-  ANTHROPIC_API_KEY: required(),
+  // Required unless LLM_PROVIDER=opencode (checked below).
+  ANTHROPIC_API_KEY: z.string().trim().min(1).optional(),
   AGENT_MODEL: z.string().default('claude-opus-5'),
+  // Development only: run the agent on an OpenAI-style model via an OpenAI Responses
+  // endpoint (OpenCode Zen). Refused in production (CLAUDE.md: zero-retention vendors only).
+  LLM_PROVIDER: z.enum(['anthropic', 'opencode']).default('anthropic'),
+  OPENCODE_API_KEY: z.string().trim().min(1).optional(),
+  OPENCODE_BASE_URL: z.url().default('https://opencode.ai/zen'),
   SEARCH_MODEL: z.string().default('claude-sonnet-5'),
 
   // Telegram is optional: setting the bot token turns the channel on.
@@ -57,6 +63,18 @@ const baseEnvSchema = z.object({
 })
 
 export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
+  if (env.LLM_PROVIDER === 'opencode') {
+    if (env.NODE_ENV === 'production') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['LLM_PROVIDER'],
+        message: 'opencode is for development only: CLAUDE.md requires zero-retention model vendors for user messages',
+      })
+    }
+    if (!env.OPENCODE_API_KEY) ctx.addIssue({ code: 'custom', path: ['OPENCODE_API_KEY'], message: 'required when LLM_PROVIDER=opencode' })
+  } else if (!env.ANTHROPIC_API_KEY) {
+    ctx.addIssue({ code: 'custom', path: ['ANTHROPIC_API_KEY'], message: 'Missing: ANTHROPIC_API_KEY (required unless LLM_PROVIDER=opencode)' })
+  }
   if (env.GOOGLE_CLIENT_ID) {
     for (const key of ['GOOGLE_CLIENT_SECRET', 'TOKEN_ENCRYPTION_KEY'] as const) {
       if (!env[key]) ctx.addIssue({ code: 'custom', path: [key], message: 'required when GOOGLE_CLIENT_ID is set' })

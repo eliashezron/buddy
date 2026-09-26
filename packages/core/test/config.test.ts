@@ -41,7 +41,9 @@ describe('loadConfig', () => {
       loadConfig(envSchema, {})
       expect.unreachable()
     } catch (err) {
-      expect((err as ConfigError).missing).toEqual([...REQUIRED].sort())
+      // ANTHROPIC_API_KEY is conditional (not needed with LLM_PROVIDER=opencode), so it is
+      // reported once the unconditional variables are present; see the per-variable test.
+      expect((err as ConfigError).missing).toEqual(REQUIRED.filter((k) => k !== 'ANTHROPIC_API_KEY').sort())
     }
   })
 
@@ -78,5 +80,18 @@ describe('loadConfig', () => {
 
   it('lets db:migrate run with only DATABASE_URL', () => {
     expect(loadConfig(dbEnvSchema, { DATABASE_URL: valid.DATABASE_URL }).DATABASE_URL).toBe(valid.DATABASE_URL)
+  })
+
+  it('allows the OpenCode development provider only outside production, and only with its key', () => {
+    const dev = loadConfig(envSchema, { ...valid, LLM_PROVIDER: 'opencode', OPENCODE_API_KEY: 'oc_test', AGENT_MODEL: 'gpt-6-luna' })
+    expect(dev).toMatchObject({ LLM_PROVIDER: 'opencode', OPENCODE_BASE_URL: 'https://opencode.ai/zen', AGENT_MODEL: 'gpt-6-luna' })
+    expect(() => loadConfig(envSchema, { ...valid, LLM_PROVIDER: 'opencode' })).toThrow(/OPENCODE_API_KEY/)
+    // CLAUDE.md: zero-retention model vendors for user messages.
+    expect(() => loadConfig(envSchema, { ...valid, NODE_ENV: 'production', LLM_PROVIDER: 'opencode', OPENCODE_API_KEY: 'oc_test' })).toThrow(/development only/)
+    expect(loadConfig(envSchema, valid).LLM_PROVIDER).toBe('anthropic')
+    // Entirely on OpenCode: no Anthropic key needed. With Anthropic, it still is.
+    const { ANTHROPIC_API_KEY: _drop, ...noAnthropic } = valid
+    expect(loadConfig(envSchema, { ...noAnthropic, LLM_PROVIDER: 'opencode', OPENCODE_API_KEY: 'oc_test' }).ANTHROPIC_API_KEY).toBeUndefined()
+    expect(() => loadConfig(envSchema, noAnthropic)).toThrow(/ANTHROPIC_API_KEY/)
   })
 })

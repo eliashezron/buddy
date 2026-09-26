@@ -16,6 +16,33 @@ export interface WebSearchDeps {
   model: string
   /** Server-side searches per call. */
   maxUses?: number
+  /**
+   * Development provider: search through an OpenAI Responses endpoint (OpenCode Zen) with
+   * its built-in `web_search` tool instead of Anthropic's. Same tool for the agent.
+   */
+  responses?: { apiKey: string; baseUrl: string; model: string; fetch?: typeof fetch }
+}
+
+type ResponsesSearchBody = {
+  output?: { type: string; content?: { type: string; text?: string; annotations?: { type: string; url?: string; title?: string }[] }[] }[]
+  error?: { message?: string } | null
+}
+
+/** Summary and cited sources from a Responses web search. */
+export function collectResponsesSearch(body: ResponsesSearchBody): { summary: string; sources: Source[] } {
+  const text: string[] = []
+  const sources = new Map<string, Source>()
+  for (const item of body.output ?? []) {
+    if (item.type !== 'message') continue
+    for (const c of item.content ?? []) {
+      if (c.type !== 'output_text') continue
+      text.push(c.text ?? '')
+      for (const a of c.annotations ?? []) {
+        if (a.type === 'url_citation' && a.url && !sources.has(a.url)) sources.set(a.url, { title: a.title ?? a.url, url: a.url })
+      }
+    }
+  }
+  return { summary: text.join('').trim(), sources: [...sources.values()].slice(0, 8) }
 }
 
 export interface Source {
@@ -51,7 +78,7 @@ export function collectSearchOutput(content: Block[]): { summary: string; source
  * tool. Wrapping it as a client tool means every search still gets an `actions`
  * row before it executes, which server tools called directly by the agent would not.
  */
-export function createWebSearchTool({ anthropic, model, maxUses = 3 }: WebSearchDeps) {
+export function createWebSearchTool({ anthropic, model, maxUses = 3, responses }: WebSearchDeps) {
   return defineTool({
     name: 'web_search',
     description:
@@ -66,6 +93,27 @@ export function createWebSearchTool({ anthropic, model, maxUses = 3 }: WebSearch
     }),
     preview: ({ query }) => `Search the web for "${query}"`,
     async execute({ query }, ctx) {
+      if (responses) {
+        const timeout = AbortSignal.timeout(60_000)
+        const res = await (responses.fetch ?? fetch)(`${responses.baseUrl.replace(/\/$/, '')}/v1/responses`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${responses.apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: responses.model,
+            instructions: `${SEARCH_SYSTEM}\n\nToday is ${ctx.now.toISOString().slice(0, 10)}. The user's timezone is ${ctx.timezone}.`,
+            input: query,
+            tools: [{ type: 'web_search' }],
+            max_output_tokens: 2000,
+            store: false,
+          }),
+          signal: ctx.signal ? AbortSignal.any([ctx.signal, timeout]) : timeout,
+        })
+        const body = (await res.json().catch(() => ({}))) as ResponsesSearchBody
+        if (!res.ok || body.error) return { ok: false as const, error: `search failed: ${body.error?.message ?? `HTTP ${res.status}`}` }
+        const { summary, sources } = collectResponsesSearch(body)
+        if (!summary) return { ok: false as const, error: 'no results' }
+        return { ok: true as const, query, summary, sources }
+      }
       const messages: Anthropic.Beta.Messages.BetaMessageParam[] = [{ role: 'user', content: query }]
       const content: Block[] = []
       // pause_turn: the server-side loop hit its iteration cap; resend to resume.
