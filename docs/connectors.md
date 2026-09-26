@@ -45,6 +45,9 @@ Later: "book focus time Friday 2pm"
 | `create_presentation` | low_write, undoable 10 min | Drive file. Title slide plus title-and-bullets slides; a half-built deck is trashed if filling it fails. |
 | `send_calendar_invite` | **outbound**, needs approval | calendar write. An event with guests (optional Meet link); Google emails the invitations. |
 | `cancel_calendar_event` | **outbound**, needs approval | calendar write. Cancels a meeting the user organised that has guests; Google emails them. Meetings others organised are refused. |
+| `edit_document` | low_write, undoable 10 min | Docs edit (`documents`). Append text (optional heading) or replace a phrase everywhere. Undo deletes the appended range or swaps the phrase back, pinned to the revision after the edit; replacements that couldn't be reversed are refused. |
+| `edit_spreadsheet` | low_write, undoable 10 min | Sheets edit (`spreadsheets`). Append rows (undo clears them) or update a range (undo restores the previous values and formulas). |
+| `edit_presentation` | low_write, undoable 10 min | Slides edit (`presentations`). Adds title-and-bullet slides at the end or after a given slide; undo deletes exactly those slides, pinned to the revision after the edit. |
 | `share_file` | **outbound**, needs approval | Drive file. Shares a file the app created as viewer / commenter / editor; Google emails a link. |
 | `gmail_send_email` | **outbound**, needs approval | Gmail compose (+ read to thread a reply). Sends only after the user presses Send on the card. |
 | `manage_connections` | low_write | none. Lists access or disconnects (revokes at Google). |
@@ -53,7 +56,7 @@ Later: "book focus time Friday 2pm"
 `drive.file` is Google's narrowest Drive scope: the app can only see and change files it
 created. Editing the user's other files, and sharing any file (which emails people, so it
 would be `outbound`), are not supported yet. `drive.readonly` is restricted, like
-`gmail.readonly`. **Enable the Google Drive, Sheets and Slides APIs** in the Cloud project
+`gmail.readonly`. **Enable the Google Drive, Docs, Sheets and Slides APIs** in the Cloud project
 (APIs & Services → Library) or these tools get 403s.
 
 Google has no drafts-only scope: `gmail.compose` also permits sending, and Google's consent

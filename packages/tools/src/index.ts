@@ -9,6 +9,7 @@ import { createSpreadsheet } from './create-spreadsheet.js'
 import { deleteCalendarEvent } from './delete-calendar-event.js'
 import { driveRead } from './drive-read.js'
 import { editDocument } from './edit-document.js'
+import { editPresentation } from './edit-presentation.js'
 import { editSpreadsheet } from './edit-spreadsheet.js'
 import { driveSearch } from './drive-search.js'
 import { fetchPage } from './fetch-page.js'
@@ -33,6 +34,7 @@ export { cellValue, createSpreadsheet, userEnteredCell } from './create-spreadsh
 export { createPresentation, slideRequests } from './create-presentation.js'
 export { driveRead } from './drive-read.js'
 export { editDocument } from './edit-document.js'
+export { editPresentation } from './edit-presentation.js'
 export { editSpreadsheet } from './edit-spreadsheet.js'
 export { driveSearch } from './drive-search.js'
 export { fileIdFrom } from './google-drive.js'
@@ -76,6 +78,7 @@ export function createTools(deps: ToolDeps): AnyTool[] {
       createPresentation,
       editDocument,
       editSpreadsheet,
+      editPresentation,
       shareFile,
       manageConnections,
     )

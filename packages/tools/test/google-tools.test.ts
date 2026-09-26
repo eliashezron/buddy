@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createLogger, NeedsConnectionError, noServices, type ToolContext } from '@wa/core'
 import {
   buildRawEmail,
+  editPresentation,
   editDocument,
   editSpreadsheet,
   userEnteredCell,
@@ -501,6 +502,43 @@ describe('editing existing Docs and Sheets (every edit undoable)', () => {
     expect(userEnteredCell('45,000')).toBe('45,000')
     expect(userEnteredCell('=SUM(A1:A3)')).toBe('=SUM(A1:A3)')
     expect(userEnteredCell('Rent')).toBe('Rent')
+  })
+})
+
+describe('edit_presentation: add slides to an existing deck', () => {
+  const DECK = '1ExistingDeckId000000000'
+  const deck = { presentationId: DECK, title: 'Cook stoves', revisionId: 'r1', slides: [{ objectId: 's1' }, { objectId: 's2' }, { objectId: 's3' }, { objectId: 's4' }] }
+
+  it('adds slides at the end, pinned to the revision it read; undo deletes exactly those slides', async () => {
+    const calls = stubGoogle((url) => (url.pathname.endsWith(':batchUpdate') ? { status: 200, json: { writeControl: { requiredRevisionId: 'r2' } } } : { status: 200, json: deck }))
+    const out = await editPresentation.execute({ file: `https://docs.google.com/presentation/d/${DECK}/edit`, slides: [{ title: 'Fundraising', bullets: ['Raising $1M', 'At a $15M valuation'] }] }, ctx())
+    expect(out).toMatchObject({ ok: true, added: 1, position: 'at the end', undo: { slideIds: ['waa1_0'], revisionId: 'r2' } })
+    const body = JSON.parse(String(calls[1]!.init.body))
+    expect(body.writeControl).toEqual({ requiredRevisionId: 'r1' })
+    expect(body.requests[0].createSlide).toMatchObject({ objectId: 'waa1_0', insertionIndex: 4, slideLayoutReference: { predefinedLayout: 'TITLE_AND_BODY' } })
+    expect(body.requests[2]).toEqual({ insertText: { objectId: 'waa1_0_body', text: 'Raising $1M\nAt a $15M valuation' } })
+    // No title-slide filling on an existing deck.
+    expect(body.requests.some((r: { insertText?: { objectId: string } }) => r.insertText && !r.insertText.objectId.startsWith('waa1_'))).toBe(false)
+
+    await editPresentation.undo!(out, ctx())
+    expect(JSON.parse(String(calls[2]!.init.body))).toEqual({ requests: [{ deleteObject: { objectId: 'waa1_0' } }], writeControl: { requiredRevisionId: 'r2' } })
+  })
+
+  it('inserts after a given slide, clamped to the deck length', async () => {
+    let calls = stubGoogle((url) => (url.pathname.endsWith(':batchUpdate') ? { status: 200, json: {} } : { status: 200, json: deck }))
+    expect(await editPresentation.execute({ file: DECK, slides: [{ title: 'Team' }], afterSlide: 2 }, ctx())).toMatchObject({ position: 'after slide 2' })
+    expect(JSON.parse(String(calls[1]!.init.body)).requests[0].createSlide).toMatchObject({ insertionIndex: 2, slideLayoutReference: { predefinedLayout: 'TITLE_ONLY' } })
+    calls = stubGoogle((url) => (url.pathname.endsWith(':batchUpdate') ? { status: 200, json: {} } : { status: 200, json: deck }))
+    expect(await editPresentation.execute({ file: DECK, slides: [{ title: 'Late' }], afterSlide: 99 }, ctx())).toMatchObject({ position: 'at the end' })
+    await expect(editPresentation.execute({ file: DECK, slides: [{ title: 'x' }] }, ctx(false))).rejects.toMatchObject({ capabilities: ['slides.edit'] })
+  })
+
+  it('says plainly when a Google API is not enabled in the Cloud project (regression: Docs API)', async () => {
+    stubGoogle(() => ({
+      status: 403,
+      json: { error: { code: 403, message: 'Google Docs API has not been used in project 123 before or it is disabled.', status: 'PERMISSION_DENIED', details: [{ reason: 'SERVICE_DISABLED' }] } },
+    }))
+    await expect(editPresentation.execute({ file: DECK, slides: [{ title: 'x' }] }, ctx())).rejects.toThrow(/Google Docs API is not enabled in the app's Google Cloud project/)
   })
 })
 
