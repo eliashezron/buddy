@@ -49,9 +49,18 @@ export async function googleApi(
     ...(opts.raw ? { body: opts.raw.data } : opts.body ? { body: JSON.stringify(opts.body) } : {}),
     signal: ctx.signal ? AbortSignal.any([ctx.signal, timeout]) : timeout,
   })
-  if (res.status === 401) throw new NeedsConnectionError(capabilities, 'revoked')
   // Exports (text/plain, text/csv) come back as text when they succeed; errors are always JSON.
   if (opts.text && res.ok) return res.text()
+  const json = await checkGoogleResponse(ctx, capabilities, res)
+  return opts.schema ? opts.schema.parse(json) : undefined
+}
+
+/**
+ * The parsed JSON body of a successful response. Missing or revoked access becomes
+ * NeedsConnectionError; a disabled API or any other failure becomes GoogleApiError.
+ */
+async function checkGoogleResponse(ctx: ToolContext, capabilities: Capability[], res: Response): Promise<unknown> {
+  if (res.status === 401) throw new NeedsConnectionError(capabilities, 'revoked')
   const json: unknown = res.status === 204 ? undefined : await res.json().catch(() => undefined)
   if (res.status === 403 && JSON.stringify(json ?? '').includes('insufficient')) {
     throw new NeedsConnectionError(capabilities, 'missing_permission')
@@ -67,7 +76,47 @@ export async function googleApi(
     const message = (json as { error?: { message?: string } } | undefined)?.error?.message ?? `HTTP ${res.status}`
     throw new GoogleApiError(res.status, `google api: ${message}`)
   }
-  return opts.schema ? opts.schema.parse(json) : undefined
+  return json
+}
+
+/**
+ * Uploads a file to the user's Drive (resumable upload: one request for the metadata, one
+ * for the bytes, so files over Drive's 5 MB multipart limit work too).
+ */
+export async function googleUpload<S extends z.ZodType>(
+  ctx: ToolContext,
+  capabilities: Capability[],
+  file: { name: string; mimeType: string; data: Uint8Array },
+  opts: { fields: string; schema: S },
+): Promise<z.infer<S>> {
+  const token = await ctx.services.credentials.accessToken(capabilities)
+  const signal = () => {
+    const timeout = AbortSignal.timeout(60_000)
+    return ctx.signal ? AbortSignal.any([ctx.signal, timeout]) : timeout
+  }
+  const start = await fetch(`https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=${encodeURIComponent(opts.fields)}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json; charset=UTF-8',
+      'X-Upload-Content-Type': file.mimeType,
+      'X-Upload-Content-Length': String(file.data.length),
+    },
+    body: JSON.stringify({ name: file.name, mimeType: file.mimeType }),
+    signal: signal(),
+  })
+  const session = start.headers.get('location')
+  if (!start.ok || !session) {
+    await checkGoogleResponse(ctx, capabilities, start)
+    throw new GoogleApiError(start.status, 'google api: upload session not started')
+  }
+  const res = await fetch(session, {
+    method: 'PUT',
+    headers: { 'Content-Type': file.mimeType },
+    body: file.data,
+    signal: signal(),
+  })
+  return opts.schema.parse(await checkGoogleResponse(ctx, capabilities, res))
 }
 
 /** "Fri 25 Sep, 10:00" in the user's timezone, so the model doesn't convert times itself. */

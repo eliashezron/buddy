@@ -46,7 +46,7 @@ export function createTelegramChannel({ client, botId, onTypingError = () => {} 
       const buttons = [
         [
           { text: `✅ ${card.approveLabel}`, data: approvalButtonId('approve', card.actionId) },
-          { text: '✖ Cancel', data: approvalButtonId('cancel', card.actionId) },
+          { text: `✖ ${card.cancelLabel ?? 'Cancel'}`, data: approvalButtonId('cancel', card.actionId) },
         ],
       ]
       const html = toTelegramHtml(card.preview)

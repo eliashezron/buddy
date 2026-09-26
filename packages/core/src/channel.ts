@@ -102,6 +102,8 @@ export interface ApprovalCard {
   /** One line, from the tool's `title`. */
   title: string
   approveLabel: string
+  /** Defaults to "Cancel". An offer (e.g. "Save to Drive") uses "Not now". */
+  cancelLabel?: string
 }
 
 export type ApprovalDecision = 'approve' | 'cancel'

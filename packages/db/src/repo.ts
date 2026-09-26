@@ -1,5 +1,5 @@
 import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from 'drizzle-orm'
-import type { Attachment, AttachmentKind } from '@wa/core'
+import type { Attachment, AttachmentKind, MediaFile, OriginalFile } from '@wa/core'
 import type { Db } from './client.js'
 import {
   actions,
@@ -206,7 +206,7 @@ export function createRepo(db: Db) {
     },
 
     /** Keeps a file the user sent until `expiresAt`. A redelivered message keeps the first copy. */
-    async saveAttachment(input: { messageId: string; userId: string; attachment: Attachment; sizeBytes: number; expiresAt: Date }) {
+    async saveAttachment(input: { messageId: string; userId: string; attachment: Attachment; original?: MediaFile; sizeBytes: number; expiresAt: Date }) {
       const a = input.attachment
       await db
         .insert(attachments)
@@ -220,6 +220,8 @@ export function createRepo(db: Db) {
           data: a.data ?? null,
           text: a.text ?? null,
           truncated: a.truncated ?? false,
+          original: input.original?.data ?? null,
+          originalMimeType: input.original?.mimeType ?? null,
           expiresAt: input.expiresAt,
         })
         .onConflictDoNothing({ target: attachments.messageId })
@@ -236,11 +238,23 @@ export function createRepo(db: Db) {
 
     async loadAttachments(ids: string[]): Promise<Map<string, Attachment>> {
       if (!ids.length) return new Map()
-      const rows = await db.select().from(attachments).where(inArray(attachments.id, ids))
+      const rows = await db
+        .select({
+          id: attachments.id,
+          kind: attachments.kind,
+          mimeType: attachments.mimeType,
+          filename: attachments.filename,
+          data: attachments.data,
+          text: attachments.text,
+          truncated: attachments.truncated,
+        })
+        .from(attachments)
+        .where(inArray(attachments.id, ids))
       return new Map(
-        rows.map((r) => [
+        rows.map((r): [string, Attachment] => [
           r.id,
           {
+            id: r.id,
             kind: r.kind as AttachmentKind,
             mimeType: r.mimeType,
             ...(r.filename ? { filename: r.filename } : {}),
@@ -269,6 +283,44 @@ export function createRepo(db: Db) {
         ),
       })
       return Boolean(newer)
+    },
+
+    /** The user's own kept files, as they sent them. Others' files and expired ones are left out. */
+    async originalFiles(userId: string, ids: string[], now: Date): Promise<OriginalFile[]> {
+      if (!ids.length) return []
+      const rows = await db
+        .select()
+        .from(attachments)
+        .where(and(eq(attachments.userId, userId), inArray(attachments.id, ids), gt(attachments.expiresAt, now)))
+      return rows.flatMap((r) => {
+        const data = r.original ?? r.data
+        if (!data) return []
+        return [
+          {
+            id: r.id,
+            kind: r.kind as AttachmentKind,
+            mimeType: r.originalMimeType ?? r.mimeType,
+            data,
+            ...(r.filename ? { filename: r.filename } : {}),
+          },
+        ]
+      })
+    },
+
+    /**
+     * Offers the user accepted that stopped for a Google connection (e.g. "Save to Drive"
+     * before Drive was connected): put back to awaiting approval, finished after connecting.
+     */
+    async actionsAwaitingConnection(userId: string, now: Date) {
+      return db.query.actions.findMany({
+        where: and(
+          eq(actions.userId, userId),
+          eq(actions.status, 'awaiting_approval'),
+          eq(actions.error, 'needs_connection'),
+          gt(actions.approvalExpiresAt, now),
+        ),
+        orderBy: actions.createdAt,
+      })
     },
 
     async deleteExpiredAttachments(now: Date): Promise<number> {

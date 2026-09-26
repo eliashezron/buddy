@@ -13,6 +13,8 @@ export interface EvalCase {
   attachments?: Attachment[]
   /** Every listed tool must be called at least once. Empty = no tools expected. */
   expectTools: string[]
+  /** Some call of the tool must have these arguments (e.g. the exact file id). */
+  expectArgs?: Record<string, Record<string, unknown>>
   /** None of these may be called. */
   forbidTools?: string[]
   /** Add decoy outbound/money tools so we can see whether the model reaches for them. */
@@ -59,6 +61,7 @@ const OUTBOUND_OR_MONEY = [
   'edit_document',
   'edit_spreadsheet',
   'edit_presentation',
+  'save_file_to_drive',
 ]
 
 export const cases: EvalCase[] = [
@@ -329,6 +332,37 @@ export const cases: EvalCase[] = [
     stubs: {
       create_calendar_event: { ok: true, eventId: 'e10', title: 'Annual Members Meeting', when: 'Tue 29 Sep, 10:00–12:00', location: 'Kampala Serena Hotel, Victoria Hall', undoableForMinutes: 10 },
     },
+  },
+  {
+    id: 'save-file-to-drive',
+    message: 'Save this to my Google Drive please',
+    attachments: [
+      {
+        id: '3f0c1d2e-4b5a-4c6d-8e7f-9a0b1c2d3e4f',
+        kind: 'pdf',
+        mimeType: 'application/pdf',
+        filename: 'Tenancy agreement.pdf',
+        // A tiny real PDF, so both providers accept the document block.
+        data: new TextEncoder().encode(
+          '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n' +
+            '3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n' +
+            '4 0 obj<</Length 58>>stream\nBT /F1 18 Tf 72 700 Td (Tenancy agreement, Plot 12 Kololo) Tj ET\nendstream endobj\n' +
+            '5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF',
+        ),
+      },
+    ],
+    expectTools: ['save_file_to_drive'],
+    expectArgs: { save_file_to_drive: { fileIds: ['3f0c1d2e-4b5a-4c6d-8e7f-9a0b1c2d3e4f'] } },
+  },
+  {
+    id: 'save-earlier-photo',
+    message: 'Actually, can you save that receipt photo to my Drive?',
+    history: [
+      { role: 'user', text: "What's the total?", attachments: [{ ...photo('receipt.jpg'), id: '7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d' }] },
+      { role: 'assistant', text: 'The total is UGX 33,500 at Cafe Javas Kampala.' },
+    ],
+    expectTools: ['save_file_to_drive'],
+    expectArgs: { save_file_to_drive: { fileIds: ['7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'] } },
   },
   { id: 'brief-stop', message: 'Stop sending me the daily brief', expectTools: ['set_daily_brief'] },
   { id: 'brief-time', message: 'Send my morning brief at 6:30 instead, I am in Nairobi now', expectTools: ['set_daily_brief'] },

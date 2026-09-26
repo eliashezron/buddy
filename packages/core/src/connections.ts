@@ -1,3 +1,4 @@
+import type { FileStore } from './attachments.js'
 import type { ReplyMode } from './speech.js'
 /**
  * Connectors: accounts a user links so tools can act for them. Access is requested
@@ -17,7 +18,7 @@ export const CAPABILITIES: Record<Capability, { provider: Provider; product: str
   'gmail.read': { provider: 'google', product: 'Gmail', label: 'read your email' },
   'gmail.compose': { provider: 'google', product: 'Gmail', label: 'save email drafts for you to review' },
   'drive.read': { provider: 'google', product: 'Google Drive', label: 'find and read your Docs, Sheets and Slides' },
-  'drive.create': { provider: 'google', product: 'Google Drive', label: 'create Docs, Sheets and Slides for you' },
+  'drive.create': { provider: 'google', product: 'Google Drive', label: 'save files and create Docs, Sheets and Slides in your Drive' },
   'docs.edit': { provider: 'google', product: 'Google Docs', label: 'edit your Google Docs' },
   'sheets.edit': { provider: 'google', product: 'Google Sheets', label: 'edit your Google Sheets' },
   'slides.edit': { provider: 'google', product: 'Google Slides', label: 'add slides to your presentations' },
@@ -70,6 +71,8 @@ export interface ToolServices {
   connections: ConnectionManager
   undo: UndoService
   preferences: PreferenceService
+  /** Photos and documents the user sent, while they are kept. */
+  files: FileStore
 }
 
 /** For contexts with no connectors (tests, evals, servers without Google configured). */
@@ -83,5 +86,6 @@ export function noServices(): ToolServices {
     connections: { list: async () => [], disconnect: async () => false },
     undo: { undoLatest: async () => ({ undone: false, reason: 'nothing to undo' }) },
     preferences: { setReplyMode: async () => {}, setDailyBrief: async () => {} },
+    files: { originals: async () => [] },
   }
 }

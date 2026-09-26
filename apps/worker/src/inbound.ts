@@ -29,7 +29,7 @@ import type { Repo, User } from '@wa/db'
 import { fileFormat, maxBytesFor, toAttachment, UnsupportedFileError } from '@wa/files'
 import { createApprovals } from './approvals.js'
 import { briefDue, briefFooter, briefPrompt } from './brief.js'
-import { ATTACHMENT_SETTLE_MS, ATTACHMENT_TTL_MS, FILE_REPLIES, isFileMessage, pickAttachments } from './files.js'
+import { ATTACHMENT_SETTLE_MS, ATTACHMENT_TTL_MS, FILE_REPLIES, isFileMessage, pickAttachments, saveOfferCard } from './files.js'
 import { KeyedLock } from './lock.js'
 
 export type InboundRepo = Pick<
@@ -56,6 +56,8 @@ export type InboundRepo = Pick<
   | 'attachmentFor'
   | 'loadAttachments'
   | 'hasNewerInbound'
+  | 'originalFiles'
+  | 'actionsAwaitingConnection'
 >
 
 /** Google (or other) connectors for one user. Absent when no connector is configured. */
@@ -259,6 +261,7 @@ export function createInboundHandler(deps: InboundDeps) {
         setReplyMode: (mode) => repo.setReplyMode(user.id, mode),
         setDailyBrief: (patch) => repo.setDailyBrief(user.id, patch),
       },
+      files: { originals: (ids) => repo.originalFiles(user.id, ids, now()) },
     }
     return services
 
@@ -296,7 +299,10 @@ export function createInboundHandler(deps: InboundDeps) {
    * Earlier turns, with the photos and files still kept, and the trigger message's own file.
    * Only the newest few files go to the model (pickAttachments); older ones become a note.
    */
-  async function conversationFor(user: User, triggerMessageId: string): Promise<{ history: HistoryTurn[]; attachments: Attachment[] }> {
+  async function conversationFor(
+    user: User,
+    triggerMessageId: string,
+  ): Promise<{ history: HistoryTurn[]; attachments: Attachment[]; batch: Attachment[] }> {
     const t = now()
     const [rows, current] = await Promise.all([
       repo.recentConversation(user.id, {
@@ -318,7 +324,12 @@ export function createInboundHandler(deps: InboundDeps) {
       return { role, text: r.body }
     })
     const own = current && loaded.get(current.id)
-    return { history, attachments: own ? [own] : [] }
+    // Files the user sent since the last reply, this one included: what "Save to Drive" offers.
+    const lastReply = rows.map((r) => r.direction).lastIndexOf('outbound')
+    const batch = [...rows.slice(lastReply + 1).flatMap((r) => (r.attachment ? [loaded.get(r.attachment.id)] : [])), own].filter(
+      (a): a is Attachment => Boolean(a),
+    )
+    return { history, attachments: own ? [own] : [], batch }
   }
 
   /** Runs the agent on `text` for `user` and replies; sends a connect link if a tool needed one. */
@@ -336,7 +347,7 @@ export function createInboundHandler(deps: InboundDeps) {
     job: JobInfo
   }) {
     const { user, log, job } = opts
-    const { history, attachments } = await conversationFor(user, opts.triggerMessageId)
+    const { history, attachments, batch } = await conversationFor(user, opts.triggerMessageId)
     const runId = await repo.createRun({ userId: user.id, triggerMessageId: opts.triggerMessageId, model: deps.model })
     const actions: ActionLog = {
       create: (a) => repo.createAction({ ...a, userId: user.id, runId }),
@@ -398,6 +409,30 @@ export function createInboundHandler(deps: InboundDeps) {
       throw err
     }
     await repo.finishRun(runId, { ...storedUsage(result.usage), status: result.status })
+    return { result, runId, batch }
+  }
+
+  /**
+   * After answering files: a "Save to Drive" button, unless the request already saved them.
+   * It is an ordinary action awaiting approval (approvals.ts), valid while the files are kept.
+   */
+  async function offerSaveToDrive(user: User, answered: Awaited<ReturnType<typeof runAndReply>>, log: Logger) {
+    if (!answered || !deps.connectors || !toolsByName.has('save_file_to_drive') || !answered.batch.length) return
+    const { result, runId, batch } = answered
+    if (result.status !== 'succeeded' || result.toolCalls.some((t) => t.name === 'save_file_to_drive')) return
+    const input = { fileIds: batch.map((a) => a.id!) }
+    const card = saveOfferCard(batch)
+    const actionId = await repo.createAction({
+      userId: user.id,
+      runId,
+      tool: 'save_file_to_drive',
+      risk: 'low_write',
+      status: 'awaiting_approval',
+      input,
+      approvalExpiresAt: new Date(now().getTime() + ATTACHMENT_TTL_MS),
+    })
+    await repo.updateAction(actionId, { status: 'awaiting_approval', card })
+    await approvals.sendCards(user, [{ actionId, tool: 'save_file_to_drive', input, card }], log)
   }
 
   /** Stores an inbound message; null when it was already handled (a redelivery). */
@@ -447,6 +482,9 @@ export function createInboundHandler(deps: InboundDeps) {
         messageId,
         userId: user.id,
         attachment,
+        // What the model sees differs from what was sent (extracted text, HEIC → JPEG): keep
+        // the original too, so "Save to Drive" saves the real file.
+        ...(attachment.data === file.data ? {} : { original: file }),
         sizeBytes: file.data.length,
         expiresAt: new Date(now().getTime() + ATTACHMENT_TTL_MS),
       })
@@ -492,7 +530,7 @@ export function createInboundHandler(deps: InboundDeps) {
         log.info('file answered with a later message')
         return
       }
-      await runAndReply({
+      const answered = await runAndReply({
         user: kept.user,
         triggerMessageId: kept.stored.id,
         text: m.media?.caption ?? '',
@@ -501,6 +539,7 @@ export function createInboundHandler(deps: InboundDeps) {
         log,
         job,
       })
+      await offerSaveToDrive(kept.user, answered, log)
     })
   }
 
@@ -637,6 +676,8 @@ export function createInboundHandler(deps: InboundDeps) {
     // Only what this request needed matters here; optional permissions left unticked are fine.
     if (e.missing.length) lines.push(`You didn't allow me to ${labels(e.missing)}, so I can't do that part.`)
     await reply(user, lines.join('\n'))
+    // Offers accepted before connecting ("Save to Drive"), when what they needed was granted.
+    if (!e.missing.length) await approvals.resumeAfterConnection(user, log)
 
     const trigger = e.triggerMessageId ? await repo.getMessageById(e.triggerMessageId) : null
     if (!trigger?.body || e.missing.length) return

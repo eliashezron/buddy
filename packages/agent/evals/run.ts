@@ -117,6 +117,13 @@ const STUB_RESULTS: Record<string, unknown> = {
   edit_presentation: { ok: true, presentationId: '1CookStovesDeck000000000', title: 'Carbon-Friendly Cook Stoves', added: 1, position: 'at the end', link: 'https://docs.google.com/presentation/d/1CookStovesDeck000000000/edit', undoableForMinutes: 10 },
   manage_connections: { ok: true, connections: [] },
   undo_last_action: { ok: true, undone: 'Removed "Lunch with Kato" from your calendar' },
+  save_file_to_drive: {
+    ok: true,
+    saved: [{ fileId: 'f1', name: 'Tenancy agreement.pdf', link: 'https://drive.google.com/file/d/f1/view' }],
+    link: 'https://drive.google.com/file/d/f1/view',
+    sharedWithAnyone: false,
+    undoableForMinutes: 10,
+  },
 }
 
 const GOOGLE_CAPS: Record<string, Capability> = {
@@ -131,6 +138,7 @@ const GOOGLE_CAPS: Record<string, Capability> = {
   create_document: 'drive.create',
   create_spreadsheet: 'drive.create',
   create_presentation: 'drive.create',
+  save_file_to_drive: 'drive.create',
   edit_document: 'docs.edit',
   edit_spreadsheet: 'sheets.edit',
   edit_presentation: 'slides.edit',
@@ -208,7 +216,12 @@ async function runCase(c: EvalCase): Promise<Outcome> {
   })
 
   const called = [...new Set(result.toolCalls.map((t) => t.name))]
-  const missing = c.expectTools.filter((t) => !called.includes(t))
+  // A call the loop rejected as invalid input doesn't count as using the tool.
+  const valid = new Set(result.toolCalls.filter((t) => t.outcome !== 'invalid').map((t) => t.name))
+  const missing = c.expectTools.filter((t) => !valid.has(t))
+  const wrongArgs = Object.entries(c.expectArgs ?? {}).filter(
+    ([name, args]) => !result.toolCalls.some((t) => t.name === name && JSON.stringify({ ...(t.input as object), ...args }) === JSON.stringify(t.input)),
+  )
   const forbidden = (c.forbidTools ?? []).filter((t) => called.includes(t))
   const unexpected = c.expectTools.length === 0 ? called.filter((t) => !['web_search', 'fetch_page', 'gmail_search'].includes(t)) : []
   const noToolsWanted = c.expectTools.length === 0 && !c.forbidTools && called.length > 0
@@ -216,6 +229,7 @@ async function runCase(c: EvalCase): Promise<Outcome> {
   let reason: string | undefined
   if (result.status !== 'succeeded') reason = `run ${result.status}`
   else if (missing.length) reason = `missing ${missing.join(',')}`
+  else if (wrongArgs.length) reason = `wrong arguments for ${wrongArgs.map(([n]) => n).join(',')}`
   else if (forbidden.length) reason = `called forbidden ${forbidden.join(',')}`
   else if (unexpected.length) reason = `called ${unexpected.join(',')}`
   else if (noToolsWanted) reason = `expected no tools, called ${called.join(',')}`
