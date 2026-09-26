@@ -15,7 +15,7 @@ function message(stop_reason: string, content: unknown[]): Msg {
     model: 'claude-opus-5',
     content,
     stop_reason,
-    usage: { input_tokens: 10, output_tokens: 5 },
+    usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 20 },
   } as unknown as Msg
 }
 const toolUse = (id: string, name: string, input: unknown) => ({ type: 'tool_use', id, name, input })
@@ -100,7 +100,7 @@ describe('runAgent', () => {
     expect(out).toMatchObject({ status: 'succeeded', reply: '1 USD ≈ 3,700 UGX' })
     expect(events).toEqual(['create:web_search:running', 'execute:web_search:usd to ugx', 'update:web_search:succeeded'])
     expect(rows.get('act_1')).toMatchObject({ status: 'succeeded', result: { ok: true, summary: 'found' } })
-    expect(out.usage).toEqual({ inputTokens: 20, outputTokens: 10 })
+    expect(out.usage).toEqual({ inputTokens: 20, outputTokens: 10, cacheReadTokens: 200, cacheWriteTokens: 40 })
 
     const second = requests[1]!
     const last = second.messages.at(-1)!
@@ -115,17 +115,33 @@ describe('runAgent', () => {
     const req = requests[0]!
     expect(req).toMatchObject({ betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default', thinking: { type: 'adaptive' } })
     expect(req.tools?.[0]).toMatchObject({ name: 'web_search', input_schema: { type: 'object', required: ['query'] } })
-    expect(String(req.system)).toContain('Thursday, 24 September 2026 at 12:00')
-    expect(String(req.system)).toContain('Africa/Kampala')
-    expect(String(req.system)).toContain('This conversation is on WhatsApp.')
+    const [instructions, context] = req.system as { text: string; cache_control?: unknown }[]
+    expect(context!.text).toContain('Thursday, 24 September 2026 at 12:00')
+    expect(context!.text).toContain('Africa/Kampala')
+    expect(context!.text).toContain('This conversation is on WhatsApp.')
+    // Prompt caching: tools + instructions behind an explicit breakpoint, the conversation automatically.
+    expect(instructions!.cache_control).toEqual({ type: 'ephemeral' })
+    expect(context!.cache_control).toBeUndefined()
+    expect(req.cache_control).toEqual({ type: 'ephemeral' })
+  })
+
+  it('the cached part of the system prompt is identical for every user, channel and time', async () => {
+    const { buildSystemPrompt } = await import('../src/prompt.js')
+    const a = buildSystemPrompt({ channel: 'whatsapp', userName: 'Elias', timezone: 'Africa/Kampala', now: new Date('2026-09-24T09:00:00Z') })
+    const b = buildSystemPrompt({ channel: 'telegram', timezone: 'Europe/London', now: new Date('2026-12-01T18:31:00Z') })
+    // Any byte that differs before the breakpoint would make every request a cache miss.
+    expect(a[0]).toEqual(b[0])
+    expect(a[0]!.text).not.toMatch(/2026|Elias|WhatsApp\.|Telegram\./)
+    expect(a[1]).not.toEqual(b[1])
   })
 
   it('names the channel in the prompt', async () => {
     const { log, events } = recordingActions()
     const { createMessage, requests } = scripted([message('end_turn', [text('hi')])])
     await runAgent({ ...base, channel: 'telegram', createMessage, tools: tools(events), actions: log, message: { text: 'hi' } })
-    expect(String(requests[0]!.system)).toContain('This conversation is on Telegram.')
-    expect(String(requests[0]!.system)).toContain("The user's Telegram name is Elias.")
+    const context = (requests[0]!.system as { text: string }[])[1]!.text
+    expect(context).toContain('This conversation is on Telegram.')
+    expect(context).toContain("The user's Telegram name is Elias.")
   })
 
   it('never executes money tools (no PIN step yet); records the attempt as cancelled', async () => {
