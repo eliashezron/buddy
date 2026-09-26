@@ -29,6 +29,13 @@ const repo = createRepo(db)
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY ?? 'unused-with-opencode', timeout: 90_000, maxRetries: 2 })
 // The agent's model. LLM_PROVIDER=opencode (development only, refused in production by
 // config validation) runs it on an OpenAI Responses model such as gpt-6-luna instead.
+if (config.LLM_PROVIDER === 'opencode' && config.NODE_ENV === 'production') {
+  // CLAUDE.md "Non-negotiables": owner's exception of 2026-09-26. Never silent.
+  logger.warn(
+    { provider: 'opencode', model: config.AGENT_MODEL },
+    'production model vendor is not zero-retention (30-day retention); owner exception, revisit before WhatsApp goes live',
+  )
+}
 const createMessage: CreateMessage =
   config.LLM_PROVIDER === 'opencode'
     ? createResponsesMessage({ apiKey: config.OPENCODE_API_KEY!, baseUrl: config.OPENCODE_BASE_URL })

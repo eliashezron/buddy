@@ -64,13 +64,9 @@ const baseEnvSchema = z.object({
 
 export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
   if (env.LLM_PROVIDER === 'opencode') {
-    if (env.NODE_ENV === 'production') {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['LLM_PROVIDER'],
-        message: 'opencode is for development only: CLAUDE.md requires zero-retention model vendors for user messages',
-      })
-    }
+    // Allowed in production by the owner's decision (2026-09-26, see CLAUDE.md
+    // "Non-negotiables"): requests are retained 30 days by the upstream vendor. The worker
+    // logs a warning at boot so this is never silent. Revisit before WhatsApp goes live.
     if (!env.OPENCODE_API_KEY) ctx.addIssue({ code: 'custom', path: ['OPENCODE_API_KEY'], message: 'required when LLM_PROVIDER=opencode' })
   } else if (!env.ANTHROPIC_API_KEY) {
     ctx.addIssue({ code: 'custom', path: ['ANTHROPIC_API_KEY'], message: 'Missing: ANTHROPIC_API_KEY (required unless LLM_PROVIDER=opencode)' })
