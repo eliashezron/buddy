@@ -18,7 +18,7 @@ import { createTools } from '@wa/tools'
 import { BotApiClient, botIdFromToken, createTelegramChannel } from '@wa/telegram'
 import { CloudApiClient, createWhatsAppChannel } from '@wa/whatsapp'
 import { createResponsesMessage, type CreateMessage } from '@wa/agent'
-import { createElevenLabsSpeechToText } from '@wa/speech'
+import { createElevenLabsSpeechToText, createElevenLabsTextToSpeech } from '@wa/speech'
 import { createInboundHandler, type Connectors } from './inbound.js'
 
 const config = loadConfigOrExit(envSchema)
@@ -43,6 +43,8 @@ const createMessage: CreateMessage =
     : (params, opts) => anthropic.beta.messages.create(params, opts)
 // Voice notes: on when an ElevenLabs key is configured.
 const speech = config.ELEVENLABS_API_KEY ? createElevenLabsSpeechToText({ apiKey: config.ELEVENLABS_API_KEY, model: config.STT_MODEL }) : undefined
+// Voice replies: same key.
+const tts = config.ELEVENLABS_API_KEY ? createElevenLabsTextToSpeech({ apiKey: config.ELEVENLABS_API_KEY, voiceId: config.TTS_VOICE_ID }) : undefined
 const channels: Partial<Record<ChannelName, Channel>> = {
   whatsapp: createWhatsAppChannel({
     client: new CloudApiClient({
@@ -106,6 +108,7 @@ const handle = createInboundHandler({
   defaultTimezone: config.DEFAULT_TIMEZONE,
   ...(connectors ? { connectors } : {}),
   ...(speech ? { speech } : {}),
+  ...(tts ? { tts } : {}),
 })
 
 // BullMQ workers need maxRetriesPerRequest: null (blocking commands).

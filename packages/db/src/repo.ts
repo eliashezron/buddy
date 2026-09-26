@@ -66,6 +66,10 @@ export function createRepo(db: Db) {
      * checks `hasCompletedRun`, because a failed attempt that BullMQ retries has
      * already stored the row but not finished the work.
      */
+    async setReplyMode(userId: string, mode: string) {
+      await db.update(users).set({ replyMode: mode }).where(eq(users.id, userId))
+    },
+
     /** A voice note's transcript becomes its body, so history reads like typed text. */
     async setMessageBody(id: string, body: string) {
       await db.update(messages).set({ body }).where(eq(messages.id, id))
@@ -105,12 +109,14 @@ export function createRepo(db: Db) {
       userId: string
       channel: Channel
       externalMessageId: string
-      body: string
+      /** Null for a voice note whose text is stored on the message that follows it. */
+      body: string | null
       sentAt: Date
+      type?: string
     }) {
       await db
         .insert(messages)
-        .values({ ...input, direction: 'outbound', type: 'text', status: 'sent' })
+        .values({ type: 'text', ...input, direction: 'outbound', status: 'sent' })
         .onConflictDoNothing({ target: [messages.channel, messages.externalMessageId] })
     },
 

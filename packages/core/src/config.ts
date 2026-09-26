@@ -61,6 +61,8 @@ const baseEnvSchema = z.object({
   // Voice notes (PRD F2). Optional: without a key, voice notes get the "not yet" reply.
   ELEVENLABS_API_KEY: z.string().trim().min(1).optional(),
   STT_MODEL: z.string().default('scribe_v2'),
+  // Voice replies (PRD F3): an ElevenLabs voice id. The default is a multilingual premade voice.
+  TTS_VOICE_ID: z.string().default('21m00Tcm4TlvDq8ikWAM'),
 
   DEFAULT_TIMEZONE: z.string().default('Africa/Kampala'),
   MESSAGE_RETENTION_DAYS: z.coerce.number().int().positive().default(30),

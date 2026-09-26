@@ -1,3 +1,4 @@
+import type { ReplyMode } from './speech.js'
 /**
  * Connectors: accounts a user links so tools can act for them. Access is requested
  * just in time: nothing is asked up front, and a tool that needs a permission the user
@@ -57,10 +58,16 @@ export interface UndoService {
 }
 
 /** Per-user services available to tools. */
+export interface PreferenceService {
+  /** How the assistant replies to this user: match their mode, or always text / voice. */
+  setReplyMode(mode: ReplyMode): Promise<void>
+}
+
 export interface ToolServices {
   credentials: CredentialProvider
   connections: ConnectionManager
   undo: UndoService
+  preferences: PreferenceService
 }
 
 /** For contexts with no connectors (tests, evals, servers without Google configured). */
@@ -73,5 +80,6 @@ export function noServices(): ToolServices {
     },
     connections: { list: async () => [], disconnect: async () => false },
     undo: { undoLatest: async () => ({ undone: false, reason: 'nothing to undo' }) },
+    preferences: { setReplyMode: async () => {} },
   }
 }

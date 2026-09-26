@@ -25,6 +25,8 @@ export interface TelegramClient {
   removeButtons(chatId: string, messageId: string): Promise<void>
   /** Downloads a file users sent (e.g. a voice note). The Bot API serves up to 20 MB. */
   downloadFile(fileId: string): Promise<{ data: Uint8Array; sizeBytes?: number }>
+  /** Sends an OGG/Opus voice note. */
+  sendVoice(chatId: string, audio: Uint8Array): Promise<{ messageId: string }>
 }
 
 /** Update types we subscribe to: messages, and presses of our inline buttons (approvals). */
@@ -102,6 +104,14 @@ export class BotApiClient implements TelegramClient {
     await this.call('editMessageReplyMarkup', { chat_id: chatId, message_id: Number(messageId), reply_markup: { inline_keyboard: [] } }, { maxAttempts: 1 })
   }
 
+  async sendVoice(chatId: string, audio: Uint8Array) {
+    const form = new FormData()
+    form.set('chat_id', chatId)
+    form.set('voice', new Blob([audio], { type: 'audio/ogg' }), 'reply.ogg')
+    const result = await this.call('sendVoice', form, { timeoutMs: 60_000 })
+    return { messageId: String(sentMessageSchema.parse(result).message_id) }
+  }
+
   async downloadFile(fileId: string) {
     const file = z.looseObject({ file_path: z.string().optional(), file_size: z.number().optional() }).parse(await this.call('getFile', { file_id: fileId }))
     if (!file.file_path) throw new TelegramApiError(400, 'Bad Request: file is too big to download')
@@ -164,10 +174,11 @@ export class BotApiClient implements TelegramClient {
     overrides: { timeoutMs?: number; signal?: AbortSignal },
   ): Promise<unknown> {
     const timeout = AbortSignal.timeout(overrides.timeoutMs ?? this.opts.timeoutMs ?? 10_000)
+    // Uploads (sendVoice) are multipart; everything else is JSON.
+    const multipart = payload instanceof FormData
     const res = await this.fetchImpl(`${this.base}/${method}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      ...(multipart ? { body: payload } : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
       signal: overrides.signal ? AbortSignal.any([overrides.signal, timeout]) : timeout,
     })
     const json = responseSchema.safeParse(await res.json().catch(() => undefined))
@@ -186,6 +197,7 @@ export type TelegramCall =
   | { method: 'answerCallbackQuery'; callbackId: string; text?: string }
   | { method: 'removeButtons'; chatId: string; messageId: string }
   | { method: 'downloadFile'; fileId: string }
+  | { method: 'sendVoice'; chatId: string; bytes: number }
 
 /** Records every outbound call. Use in tests and `pnpm replay`; nothing reaches Telegram. */
 export class FakeTelegramClient implements TelegramClient {
@@ -217,6 +229,11 @@ export class FakeTelegramClient implements TelegramClient {
 
   /** Files tests can "download", by file id. */
   readonly files = new Map<string, Uint8Array>()
+
+  async sendVoice(chatId: string, audio: Uint8Array) {
+    this.calls.push({ method: 'sendVoice', chatId, bytes: audio.length })
+    return { messageId: String(++this.seq) }
+  }
 
   async downloadFile(fileId: string) {
     this.calls.push({ method: 'downloadFile', fileId })

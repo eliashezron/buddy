@@ -1,8 +1,23 @@
 # Voice notes
 
 **Voice in (PRD F2):** a user sends a voice note on Telegram or WhatsApp; the assistant
-transcribes it and handles the text exactly as if it had been typed. Voice replies (F3)
-come next.
+transcribes it and handles the text exactly as if it had been typed.
+
+**Voice out (PRD F3):** a voice note is answered with a voice note, in the language that
+was detected. Users can change this: "reply in text from now on", "always send voice notes",
+"answer the way I write" (`set_reply_mode` → `users.reply_mode` = `text` | `voice` | `match`,
+default `match`).
+
+- **What is spoken:** `speakable()` removes links (never read aloud) and Markdown, turns
+  list items into sentences and cuts near 60 s (900 chars) at a sentence. If links were
+  removed or it was cut, the full text follows the voice note.
+- **Audio:** ElevenLabs returns OGG/Opus (48 kHz mono), which Telegram (`sendVoice`) and
+  WhatsApp (upload → `audio` message) play as a voice note: no transcoding.
+- **Model by language:** Eleven Flash v2.5 (cheaper, faster) for the languages it speaks
+  (English, French, Spanish, German, Hindi, Portuguese, …), Eleven v3 for the rest,
+  including Swahili. `TTS_VOICE_ID` picks the voice (a multilingual premade by default).
+- **Never lost:** if speech fails, the text reply goes out instead. Approval cards and
+  connect links are always text.
 
 ```
 voice note (Telegram voice / WhatsApp audio)
@@ -40,3 +55,6 @@ it explicitly (or move to Enterprise / another vendor) before setting
 2. Send the dev bot a voice note: "what's the dollar rate today?" → it answers as if typed.
 3. A voice note asking to email someone → the card starts with 🎙️ You said: "…".
 4. A silent note → "I couldn't make out that voice note…".
+5. A voice note → a voice note back; one about exchange rates → a voice note, then the text
+   with the source link.
+6. "Reply in text from now on" → the next voice note gets a text reply.

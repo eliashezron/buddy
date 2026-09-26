@@ -15,7 +15,10 @@ import {
   type InboundMessage,
   type Logger,
   type QueueEvent,
+  type ReplyMode,
   type SpeechToText,
+  type TextToSpeech,
+  type Transcript,
   type StatusUpdate,
   type ToolServices,
   type UndoService,
@@ -41,6 +44,7 @@ export type InboundRepo = Pick<
   | 'latestUndoableActions'
   | 'decideApproval'
   | 'setMessageBody'
+  | 'setReplyMode'
 >
 
 /** Google (or other) connectors for one user. Absent when no connector is configured. */
@@ -62,9 +66,42 @@ export interface InboundDeps {
   connectors?: Connectors
   /** Voice notes (PRD F2). Without it, voice notes get the "not yet" reply. */
   speech?: SpeechToText
+  /** Voice replies (PRD F3). Without it, every reply is text. */
+  tts?: TextToSpeech
   historyLimit?: number
   historyWindowMs?: number
   now?: () => Date
+}
+
+/** About 60 s of speech (PRD F3: voice replies stay under 60 s). */
+export const MAX_SPOKEN_CHARS = 900
+
+/**
+ * The reply as it should sound: no URLs (never read a link aloud), no Markdown symbols,
+ * list items as sentences, cut at a sentence boundary near 60 s.
+ */
+export function speakable(markdown: string): { text: string; hadLinks: boolean; truncated: boolean } {
+  const hadLinks = /https?:\/\//.test(markdown)
+  let text = markdown
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '$1')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/[*_`~#>]/g, '')
+    .split('\n')
+    .map((line) => line.replace(/^\s*(?:[-•]|\d+[.)])\s+/, '').trim())
+    .filter(Boolean)
+    .map((line) => (/[.!?:;,]$/.test(line) ? line : `${line}.`))
+    .join(' ')
+    .replace(/\s+([.,;:!?])/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+  let truncated = false
+  if (text.length > MAX_SPOKEN_CHARS) {
+    const cut = text.slice(0, MAX_SPOKEN_CHARS)
+    const end = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '))
+    text = end > MAX_SPOKEN_CHARS / 2 ? cut.slice(0, end + 1) : `${cut.slice(0, cut.lastIndexOf(' '))}…`
+    truncated = true
+  }
+  return { text, hadLinks, truncated }
 }
 
 /** PRD F2: voice notes up to 5 minutes. WhatsApp reports no duration, so size is capped too. */
@@ -200,7 +237,12 @@ export function createInboundHandler(deps: InboundDeps) {
 
   function servicesFor(user: User): ToolServices {
     const base = deps.connectors?.forUser(user.id) ?? noServices()
-    const services: ToolServices = { credentials: base.credentials, connections: base.connections, undo: undoFor(user) }
+    const services: ToolServices = {
+      credentials: base.credentials,
+      connections: base.connections,
+      undo: undoFor(user),
+      preferences: { setReplyMode: (mode) => repo.setReplyMode(user.id, mode) },
+    }
     return services
 
     function undoFor(u: User): UndoService {
@@ -242,6 +284,8 @@ export function createInboundHandler(deps: InboundDeps) {
     typingFor?: InboundMessage
     /** Set when the text came from a voice note: shown on approval cards so a mis-heard word is caught. */
     spoken?: boolean
+    /** The voice note's detected language, so a voice reply is spoken in it. */
+    language?: string
     log: Logger
     job: JobInfo
   }) {
@@ -298,7 +342,7 @@ export function createInboundHandler(deps: InboundDeps) {
       'agent run finished',
     )
     try {
-      await reply(user, result.reply)
+      await replyInMode(user, result.reply, { spoken: opts.spoken ?? false, ...(opts.language ? { language: opts.language } : {}), log })
       if (result.connectionRequests.length) await sendConnectLink(user, result.connectionRequests, opts.triggerMessageId)
       const pending = result.toolCalls.filter((t) => t.outcome === 'awaiting_approval' && t.actionId)
       await approvals.sendCards(
@@ -358,7 +402,17 @@ export function createInboundHandler(deps: InboundDeps) {
     } else if (m.type === 'audio' && m.media && deps.speech) {
       const heard = await transcribe(user, m, stored.id, log, job)
       if (!heard) return
-      await runAndReply({ user, triggerMessageId: stored.id, text: heard, forwarded: m.forwarded ?? false, typingFor: m, spoken: true, log, job })
+      await runAndReply({
+        user,
+        triggerMessageId: stored.id,
+        text: heard.text,
+        forwarded: m.forwarded ?? false,
+        typingFor: m,
+        spoken: true,
+        ...(heard.language ? { language: heard.language } : {}),
+        log,
+        job,
+      })
       return
     } else if (m.type !== 'text') {
       text = undefined
@@ -376,7 +430,7 @@ export function createInboundHandler(deps: InboundDeps) {
    * Voice note → text. Returns the transcript, or null after telling the user why not.
    * The transcript is stored as the message body (it is content: never logged).
    */
-  async function transcribe(user: User, m: InboundMessage, messageId: string, log: Logger, job: JobInfo): Promise<string | null> {
+  async function transcribe(user: User, m: InboundMessage, messageId: string, log: Logger, job: JobInfo): Promise<Transcript | null> {
     if ((m.media?.durationSec ?? 0) > MAX_VOICE_SECONDS) {
       await reply(user, VOICE_REPLIES.tooLong)
       return null
@@ -392,7 +446,7 @@ export function createInboundHandler(deps: InboundDeps) {
         return null
       }
       await repo.setMessageBody(messageId, t.text)
-      return t.text
+      return t
     } catch (err) {
       if (err instanceof MediaTooLargeError) {
         await reply(user, VOICE_REPLIES.tooLong)
@@ -405,6 +459,34 @@ export function createInboundHandler(deps: InboundDeps) {
       return null
     } finally {
       stopTyping()
+    }
+  }
+
+  /**
+   * PRD F3: reply in the user's mode. "match" answers a voice note with a voice note; "text"
+   * and "voice" are fixed. The voice note speaks a link-free version of the reply; when that
+   * left something out (links, or it was cut to ~60 s), the full text follows. If speech
+   * fails, the text goes out instead, so a reply is never lost.
+   */
+  async function replyInMode(user: User, markdown: string, opts: { spoken: boolean; language?: string; log: Logger }) {
+    const mode = (user.replyMode ?? 'match') as ReplyMode
+    const wantVoice = deps.tts && (mode === 'voice' || (mode === 'match' && opts.spoken))
+    const speech = wantVoice ? speakable(markdown) : null
+    if (!deps.tts || !speech?.text) return reply(user, markdown)
+    try {
+      const audio = await deps.tts.synthesize(speech.text, opts.language ? { language: opts.language } : {})
+      const ids = await channelFor(user.channel).sendVoice(user.externalId, audio)
+      const alsoText = speech.hadLinks || speech.truncated
+      const sentAt = new Date()
+      // History keeps the reply text once: on the voice note, or on the text that follows it.
+      for (const id of ids) {
+        await repo.insertOutboundMessage({ userId: user.id, channel: user.channel, externalMessageId: id, body: alsoText ? null : markdown, sentAt, type: 'audio' })
+      }
+      opts.log.info({ language: opts.language, chars: speech.text.length, truncated: speech.truncated, alsoText }, 'voice reply sent')
+      if (alsoText) await reply(user, markdown)
+    } catch (err) {
+      opts.log.warn({ err: err instanceof Error ? err.message : String(err) }, 'voice reply failed, sending text')
+      await reply(user, markdown)
     }
   }
 

@@ -5,10 +5,10 @@ import Anthropic from '@anthropic-ai/sdk'
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { FAILURE_REPLY, type CreateMessage } from '@wa/agent'
-import { createLogger, defineTool, NeedsConnectionError, type Capability, type ChannelEvent, type ChannelName, type ConnectionEvent, type SpeechToText } from '@wa/core'
+import { createLogger, defineTool, NeedsConnectionError, type Capability, type ChannelEvent, type ChannelName, type ConnectionEvent, type SpeechToText, type TextToSpeech } from '@wa/core'
 import { createTelegramChannel, FakeTelegramClient, parseTelegramUpdate, TelegramApiError } from '@wa/telegram'
 import { createWhatsAppChannel, FakeWhatsAppClient, parseWebhook } from '@wa/whatsapp'
-import { createInboundHandler, UNSUPPORTED_REPLIES, VOICE_REPLIES, welcomeText, type Connectors, type InboundRepo } from '../src/inbound.js'
+import { createInboundHandler, MAX_SPOKEN_CHARS, speakable, UNSUPPORTED_REPLIES, VOICE_REPLIES, welcomeText, type Connectors, type InboundRepo } from '../src/inbound.js'
 
 const logger = createLogger({ name: 'test', level: 'silent' })
 
@@ -28,7 +28,7 @@ function fixtureEvents(name: string, rebase = true): ChannelEvent[] {
 
 /** In-memory stand-in for @wa/db's repo, enough to exercise the handler's logic. */
 function memoryRepo() {
-  type U = { id: string; channel: ChannelName; externalId: string; displayName: string | null; timezone: string; lastInboundAt: Date | null; createdAt: Date }
+  type U = { id: string; channel: ChannelName; externalId: string; displayName: string | null; timezone: string; lastInboundAt: Date | null; replyMode: string; createdAt: Date }
   const users = new Map<string, U>()
   const messages: { id: string; userId: string; channel: string; externalMessageId: string; direction: string; body: string | null; status?: string }[] = []
   const runs = new Map<string, { status: string; triggerMessageId: string }>()
@@ -43,7 +43,7 @@ function memoryRepo() {
     async upsertUserOnInbound({ channel, externalId, displayName, at, timezone }) {
       let u = users.get(key(channel, externalId))
       if (!u) {
-        u = { id: `user_${++seq}`, channel, externalId, displayName: displayName ?? null, timezone, lastInboundAt: at, createdAt: new Date() }
+        u = { id: `user_${++seq}`, channel, externalId, displayName: displayName ?? null, timezone, lastInboundAt: at, replyMode: 'match', createdAt: new Date() }
         users.set(key(channel, externalId), u)
       } else if (!u.lastInboundAt || u.lastInboundAt < at) u.lastInboundAt = at
       return u
@@ -97,6 +97,10 @@ function memoryRepo() {
       const m = messages.find((x) => x.id === id)
       return m ? ({ ...m, type: 'text', status: m.status ?? null, errorCodes: null, sentAt: new Date(), createdAt: new Date() } as never) : null
     },
+    async setReplyMode(userId, mode) {
+      const u = [...users.values()].find((x) => x.id === userId)
+      if (u) u.replyMode = mode
+    },
     async setMessageBody(id, body) {
       const m = messages.find((x) => x.id === id)
       if (m) m.body = body
@@ -140,7 +144,7 @@ const reply = (text: string) =>
 
 function setup(
   createMessage: CreateMessage,
-  opts: { connectors?: Connectors; tools?: ReturnType<typeof defineTool>[]; now?: () => Date; credentials?: Connectors['forUser']; speech?: SpeechToText } = {},
+  opts: { connectors?: Connectors; tools?: ReturnType<typeof defineTool>[]; now?: () => Date; credentials?: Connectors['forUser']; speech?: SpeechToText; tts?: TextToSpeech } = {},
 ) {
   const mem = memoryRepo()
   const wa = new FakeWhatsAppClient()
@@ -170,6 +174,7 @@ function setup(
     ...(opts.connectors ? { connectors: opts.connectors } : {}),
     ...(opts.now ? { now: opts.now } : {}),
     ...(opts.speech ? { speech: opts.speech } : {}),
+    ...(opts.tts ? { tts: opts.tts } : {}),
   })
   return { ...mem, wa, tg, handle }
 }
@@ -807,6 +812,95 @@ describe('inbound handler: voice notes (PRD F2)', () => {
     const t = setup(async () => reply('never'))
     for (const e of fixtureEvents('telegram-voice')) await t.handle(e)
     expect(t.tg.sent.at(-1)!.text).toBe(UNSUPPORTED_REPLIES.audio)
+  })
+})
+
+describe('voice replies (PRD F3)', () => {
+  function voices(fail = false) {
+    const spoken: { text: string; language?: string }[] = []
+    const tts: TextToSpeech = {
+      async synthesize(text, opts) {
+        spoken.push({ text, ...(opts?.language ? { language: opts.language } : {}) })
+        if (fail) throw Object.assign(new Error('speech failed: quota'), { transient: false })
+        return { data: new Uint8Array([79, 103, 103, 83]), mimeType: 'audio/ogg' }
+      },
+    }
+    return { tts, spoken }
+  }
+  const heardAs = (text: string, language = 'swa'): SpeechToText => ({ transcribe: async () => ({ text, language }) })
+  const voiceNote = () => {
+    const [e] = fixtureEvents('telegram-voice')
+    return e!
+  }
+
+  it('speakable(): no links or Markdown, list items as sentences, cut near 60 s at a sentence', () => {
+    expect(speakable('**1 USD** ≈ 3,913 UGX.\n\nSource: https://xe.com/x')).toEqual({ text: '1 USD ≈ 3,913 UGX. Source:', hadLinks: true, truncated: false })
+    expect(speakable('Tomorrow:\n• Standup at 9\n• [Call](https://meet.google.com/x) with Kato').text).toBe('Tomorrow: Standup at 9. Call with Kato.')
+    const long = speakable('This is a sentence. '.repeat(100))
+    expect(long.truncated).toBe(true)
+    expect(long.text.length).toBeLessThanOrEqual(MAX_SPOKEN_CHARS)
+    expect(long.text.endsWith('.')).toBe(true)
+  })
+
+  it('answers a voice note with a voice note in the detected language, and stores the text once', async () => {
+    const { tts, spoken } = voices()
+    const t = setup(async () => reply('Kesho una mkutano saa tatu.'), { speech: heardAs('Nina nini kesho?'), tts })
+    t.tg.files.set('TG_FILE_ID_PLACEHOLDER', new Uint8Array(24))
+    await t.handle(voiceNote())
+    expect(spoken).toEqual([{ text: 'Kesho una mkutano saa tatu.', language: 'swa' }])
+    expect(t.tg.calls.filter((c) => c.method === 'sendVoice')).toEqual([{ method: 'sendVoice', chatId: '555000111', bytes: 4 }])
+    expect(t.tg.sent).toEqual([]) // voice only: nothing was left out
+    const out = t.messages.filter((m) => m.direction === 'outbound')
+    expect(out.map((m) => m.body)).toEqual(['Kesho una mkutano saa tatu.'])
+  })
+
+  it('sends the text after the voice note when the reply had links (never read aloud)', async () => {
+    const { tts, spoken } = voices()
+    const t = setup(async () => reply('About 3,913 UGX. https://xe.com/rates'), { speech: heardAs('dollar rate?', 'eng'), tts })
+    t.tg.files.set('TG_FILE_ID_PLACEHOLDER', new Uint8Array(24))
+    await t.handle(voiceNote())
+    expect(spoken[0]!.text).toBe('About 3,913 UGX.')
+    expect(t.tg.calls.map((c) => c.method).filter((m) => m === 'sendVoice' || m === 'sendMessage')).toEqual(['sendVoice', 'sendMessage'])
+    expect(t.tg.sent.at(-1)!.text).toContain('https://xe.com/rates')
+    // History has the reply once, on the text message.
+    expect(t.messages.filter((m) => m.direction === 'outbound').map((m) => m.body)).toEqual([null, 'About 3,913 UGX. https://xe.com/rates'])
+  })
+
+  it('answers text with text in match mode; "voice" mode speaks every reply; "text" mode never does', async () => {
+    const { tts, spoken } = voices()
+    const t = setup(async () => reply('Done.'), { speech: heardAs('hi'), tts })
+    for (const e of fixtureEvents('telegram-text')) await t.handle(e)
+    expect(spoken).toEqual([])
+    const user = [...t.users.values()][0]!
+    user.replyMode = 'voice'
+    const [again] = fixtureEvents('telegram-text')
+    if (again?.kind === 'message') again.message.id = '1:555000111:950'
+    await t.handle(again!)
+    expect(spoken).toEqual([{ text: 'Done.' }])
+    user.replyMode = 'text'
+    t.tg.files.set('TG_FILE_ID_PLACEHOLDER', new Uint8Array(24))
+    await t.handle(voiceNote())
+    expect(spoken).toHaveLength(1)
+  })
+
+  it('falls back to text when speech fails, so the reply is never lost', async () => {
+    const { tts } = voices(true)
+    const t = setup(async () => reply('Here you go.'), { speech: heardAs('help'), tts })
+    t.tg.files.set('TG_FILE_ID_PLACEHOLDER', new Uint8Array(24))
+    await t.handle(voiceNote())
+    expect(t.tg.calls.some((c) => c.method === 'sendVoice')).toBe(false)
+    expect(t.tg.sent.at(-1)!.text).toBe('Here you go.')
+  })
+
+  it('set_reply_mode stores the choice through the preferences service', async () => {
+    const { setReplyMode } = await import('@wa/tools')
+    const script = [
+      { id: 'm', type: 'message', role: 'assistant', model: 'x', content: [{ type: 'tool_use', id: 't1', name: 'set_reply_mode', input: { mode: 'text' } }], stop_reason: 'tool_use', usage: { input_tokens: 1, output_tokens: 1 } },
+      reply("Got it: I'll reply in text from now on."),
+    ] as unknown as Anthropic.Beta.Messages.BetaMessage[]
+    const t = setup(async () => script.shift()!, { tools: [setReplyMode] as never })
+    for (const e of fixtureEvents('telegram-text')) await t.handle(e)
+    expect([...t.users.values()][0]!.replyMode).toBe('text')
   })
 })
 

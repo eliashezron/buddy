@@ -78,6 +78,10 @@ export function createWhatsAppChannel({
       }
       return channel.sendText(to, link.text.includes(link.url) ? link.text : `${link.text}\n${link.url}`)
     },
+    async sendVoice(to, audio) {
+      await assertWindowOpen(to)
+      return [(await client.sendVoice(to, audio.data)).messageId]
+    },
     async downloadMedia(message, { maxBytes }) {
       if (!message.media) throw new Error('message has no media')
       try {

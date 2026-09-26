@@ -335,6 +335,18 @@ describe('BotApiClient', () => {
     expect(String((err as Error).message)).not.toContain(token)
   })
 
+  it('sends a voice note as multipart (no JSON content type)', async () => {
+    const calls: { url: string; init: RequestInit }[] = []
+    const impl = (async (url: string, init: RequestInit) => (calls.push({ url, init }), new Response(JSON.stringify({ ok: true, result: { message_id: 90 } })))) as unknown as typeof fetch
+    const client = new BotApiClient({ token, logger, fetch: impl })
+    expect(await client.sendVoice('555', new Uint8Array([79, 103, 103, 83]))).toEqual({ messageId: '90' })
+    expect(calls[0]!.url).toBe(`https://api.telegram.org/bot${token}/sendVoice`)
+    const form = calls[0]!.init.body as FormData
+    expect(form.get('chat_id')).toBe('555')
+    expect((form.get('voice') as File).type).toBe('audio/ogg')
+    expect(calls[0]!.init.headers).toBeUndefined()
+  })
+
   it('honours retry_after on 429, then succeeds', async () => {
     const f = fakeFetch([
       { status: 429, body: { ok: false, error_code: 429, description: 'Too Many Requests', parameters: { retry_after: 0.01 } } },
