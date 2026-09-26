@@ -26,7 +26,7 @@ const logger = createLogger({ name: 'worker', level: config.LOG_LEVEL })
 const { db, close: closeDb } = createDb(config.DATABASE_URL)
 const repo = createRepo(db)
 // Vendor must be on zero-retention / no-training terms (CLAUDE.md).
-const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY, timeout: 90_000, maxRetries: 2 })
+const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY ?? 'unused-with-opencode', timeout: 90_000, maxRetries: 2 })
 // The agent's model. LLM_PROVIDER=opencode (development only, refused in production by
 // config validation) runs it on an OpenAI Responses model such as gpt-6-luna instead.
 const createMessage: CreateMessage =
@@ -83,7 +83,15 @@ const handle = createInboundHandler({
   channels,
   createMessage,
   model: config.AGENT_MODEL,
-  tools: createTools({ anthropic, searchModel: config.SEARCH_MODEL, google: Boolean(connectors) }),
+  tools: createTools({
+    anthropic,
+    searchModel: config.SEARCH_MODEL,
+    google: Boolean(connectors),
+    // With the development provider, web search goes through OpenCode as well: no Anthropic calls at all.
+    ...(config.LLM_PROVIDER === 'opencode'
+      ? { responsesSearch: { apiKey: config.OPENCODE_API_KEY!, baseUrl: config.OPENCODE_BASE_URL, model: config.AGENT_MODEL } }
+      : {}),
+  }),
   logger,
   defaultTimezone: config.DEFAULT_TIMEZONE,
   ...(connectors ? { connectors } : {}),

@@ -21,7 +21,8 @@ const baseEnvSchema = z.object({
   // Pinned on purpose (docs/whatsapp-notes.md §3); no default.
   GRAPH_API_VERSION: z.string().regex(/^v\d+\.\d+$/, 'expected a version like v23.0'),
 
-  ANTHROPIC_API_KEY: required(),
+  // Required unless LLM_PROVIDER=opencode (checked below).
+  ANTHROPIC_API_KEY: z.string().trim().min(1).optional(),
   AGENT_MODEL: z.string().default('claude-opus-5'),
   // Development only: run the agent on an OpenAI-style model via an OpenAI Responses
   // endpoint (OpenCode Zen). Refused in production (CLAUDE.md: zero-retention vendors only).
@@ -71,6 +72,8 @@ export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
       })
     }
     if (!env.OPENCODE_API_KEY) ctx.addIssue({ code: 'custom', path: ['OPENCODE_API_KEY'], message: 'required when LLM_PROVIDER=opencode' })
+  } else if (!env.ANTHROPIC_API_KEY) {
+    ctx.addIssue({ code: 'custom', path: ['ANTHROPIC_API_KEY'], message: 'Missing: ANTHROPIC_API_KEY (required unless LLM_PROVIDER=opencode)' })
   }
   if (env.GOOGLE_CLIENT_ID) {
     for (const key of ['GOOGLE_CLIENT_SECRET', 'TOKEN_ENCRYPTION_KEY'] as const) {

@@ -46,13 +46,15 @@ export { undoLastAction } from './undo-last-action.js'
 export interface ToolDeps {
   anthropic: Anthropic
   searchModel: string
+  /** Search through an OpenAI Responses endpoint (development provider) instead of Anthropic. */
+  responsesSearch?: { apiKey: string; baseUrl: string; model: string }
   /** Google connectors configured on this server (GOOGLE_CLIENT_ID set). */
   google?: boolean
 }
 
 /** Every tool available to the agent. One file per tool; each needs an eval in packages/agent/evals. */
 export function createTools(deps: ToolDeps): AnyTool[] {
-  const tools: AnyTool[] = [createWebSearchTool({ anthropic: deps.anthropic, model: deps.searchModel }), fetchPage, undoLastAction]
+  const tools: AnyTool[] = [createWebSearchTool({ anthropic: deps.anthropic, model: deps.searchModel, ...(deps.responsesSearch ? { responses: deps.responsesSearch } : {}) }), fetchPage, undoLastAction]
   if (deps.google) tools.push(
       calendarListEvents,
       createCalendarEvent,

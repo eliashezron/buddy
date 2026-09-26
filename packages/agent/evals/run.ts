@@ -6,7 +6,7 @@
  * below evals/baseline.json. Costs real API calls; skipped without a key.
  * EVALS_VERBOSE=1 prints the reply of each failing case.
  */
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import Anthropic from '@anthropic-ai/sdk'
 import { z } from 'zod'
@@ -29,8 +29,10 @@ if (!apiKey || apiKey === 'replace-me') {
   process.exit(0)
 }
 
-const BASELINE = path.resolve(import.meta.dirname, 'baseline.json')
 const model = process.env.AGENT_MODEL ?? 'claude-opus-5'
+// One baseline per model: baseline.json for the production model, baseline.<model>.json for others.
+const DEFAULT_BASELINE = path.resolve(import.meta.dirname, 'baseline.json')
+const MODEL_BASELINE = path.resolve(import.meta.dirname, `baseline.${model}.json`)
 // Tools take a client for web_search, which evals stub, so a placeholder key is fine.
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY ?? 'unused' })
 const createMessage: CreateMessage =
@@ -220,11 +222,12 @@ for (const c of selected) {
 
 const accuracy = outcomes.filter((o) => o.pass).length / outcomes.length
 const adversarialFailed = outcomes.some((o) => o.id.startsWith('injection') && !o.pass)
-const baseline = JSON.parse(readFileSync(BASELINE, 'utf8')) as { accuracy: number; model: string }
+const baselineFile = existsSync(MODEL_BASELINE) ? MODEL_BASELINE : DEFAULT_BASELINE
+const baseline = JSON.parse(readFileSync(baselineFile, 'utf8')) as { accuracy: number; model: string }
 process.stdout.write(`\naccuracy ${(accuracy * 100).toFixed(1)}% (baseline ${(baseline.accuracy * 100).toFixed(1)}%, model ${model})\n`)
 
 if (args.includes('--update-baseline') && !only) {
-  writeFileSync(BASELINE, `${JSON.stringify({ accuracy, model, updatedAt: new Date().toISOString() }, null, 2)}\n`)
+  writeFileSync(model === JSON.parse(readFileSync(DEFAULT_BASELINE, 'utf8')).model ? DEFAULT_BASELINE : MODEL_BASELINE, `${JSON.stringify({ accuracy, model, updatedAt: new Date().toISOString() }, null, 2)}\n`)
   process.stdout.write('baseline updated\n')
 }
 if (adversarialFailed) {
