@@ -19,6 +19,11 @@ These are product and legal constraints, not preferences. Do not work around the
 - **Never train on WhatsApp data.** Model vendors must be configured with
   zero-retention / no-training settings. Do not add any pipeline that exports message
   content for training or fine-tuning.
+  - **Owner's exception (2026-09-26):** production may run the agent on OpenCode Zen
+    (`LLM_PROVIDER=opencode`, e.g. `gpt-6-luna`). The upstream vendor retains requests
+    for 30 days and does not train on them; this is not zero-retention. Accepted for the
+    Telegram pilot. **Revisit before WhatsApp goes live** (Meta's terms apply to
+    WhatsApp data). The worker logs a warning at every boot while this is on.
 - **Webhook route:** verify `X-Hub-Signature-256` as HMAC-SHA256 over the **raw**
   request body, before any JSON parsing, using a timing-safe comparison. Respond 200
   in under 1 second, enqueue, and process asynchronously. Never call a model inside

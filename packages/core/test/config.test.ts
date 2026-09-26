@@ -82,12 +82,13 @@ describe('loadConfig', () => {
     expect(loadConfig(dbEnvSchema, { DATABASE_URL: valid.DATABASE_URL }).DATABASE_URL).toBe(valid.DATABASE_URL)
   })
 
-  it('allows the OpenCode development provider only outside production, and only with its key', () => {
+  it('allows the OpenCode provider, only with its key (in production by the owner\'s exception)', () => {
     const dev = loadConfig(envSchema, { ...valid, LLM_PROVIDER: 'opencode', OPENCODE_API_KEY: 'oc_test', AGENT_MODEL: 'gpt-6-luna' })
     expect(dev).toMatchObject({ LLM_PROVIDER: 'opencode', OPENCODE_BASE_URL: 'https://opencode.ai/zen', AGENT_MODEL: 'gpt-6-luna' })
     expect(() => loadConfig(envSchema, { ...valid, LLM_PROVIDER: 'opencode' })).toThrow(/OPENCODE_API_KEY/)
-    // CLAUDE.md: zero-retention model vendors for user messages.
-    expect(() => loadConfig(envSchema, { ...valid, NODE_ENV: 'production', LLM_PROVIDER: 'opencode', OPENCODE_API_KEY: 'oc_test' })).toThrow(/development only/)
+    // CLAUDE.md "Non-negotiables", owner's exception of 2026-09-26: allowed in production (the worker warns at boot).
+    expect(loadConfig(envSchema, { ...valid, NODE_ENV: 'production', LLM_PROVIDER: 'opencode', OPENCODE_API_KEY: 'oc_test' }).LLM_PROVIDER).toBe('opencode')
+    expect(() => loadConfig(envSchema, { ...valid, NODE_ENV: 'production', LLM_PROVIDER: 'opencode' })).toThrow(/OPENCODE_API_KEY/)
     expect(loadConfig(envSchema, valid).LLM_PROVIDER).toBe('anthropic')
     // Entirely on OpenCode: no Anthropic key needed. With Anthropic, it still is.
     const { ANTHROPIC_API_KEY: _drop, ...noAnthropic } = valid

@@ -18,6 +18,15 @@ envVarGroups:
       - key: TELEGRAM_MODE
         value: webhook
       # Secrets: Render asks for these when the Blueprint is created. Never commit them.
+      # Model provider. Owner's exception (CLAUDE.md, 2026-09-26): production runs on
+      # OpenCode with LLM_PROVIDER=opencode, AGENT_MODEL=gpt-6-luna and OPENCODE_API_KEY
+      # (ANTHROPIC_API_KEY is then unused). Revisit before WhatsApp goes live.
+      - key: LLM_PROVIDER
+        sync: false
+      - key: AGENT_MODEL
+        sync: false
+      - key: OPENCODE_API_KEY
+        sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: TELEGRAM_BOT_TOKEN
