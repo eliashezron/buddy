@@ -114,6 +114,7 @@ const STUB_RESULTS: Record<string, unknown> = {
   create_presentation: { ok: true, fileId: 'p1', title: 'Deck', slideCount: 5, link: 'https://docs.google.com/presentation/d/p1/edit', sharedWithAnyone: false, undoableForMinutes: 10 },
   edit_document: { ok: true, documentId: '1TeamNotesDocId00000000', title: 'Team notes', change: 'appended', characters: 40, link: 'https://docs.google.com/document/d/1TeamNotesDocId00000000/edit', undoableForMinutes: 10 },
   edit_spreadsheet: { ok: true, spreadsheetId: '1BudgetSheetId0000000000', title: 'Household budget 2026', tab: 'Sept', change: 'appended', rows: 1, range: "'Sept'!A9:C9", link: 'https://docs.google.com/spreadsheets/d/1BudgetSheetId0000000000/edit', undoableForMinutes: 10 },
+  edit_presentation: { ok: true, presentationId: '1CookStovesDeck000000000', title: 'Carbon-Friendly Cook Stoves', added: 1, position: 'at the end', link: 'https://docs.google.com/presentation/d/1CookStovesDeck000000000/edit', undoableForMinutes: 10 },
   manage_connections: { ok: true, connections: [] },
   undo_last_action: { ok: true, undone: 'Removed "Lunch with Kato" from your calendar' },
 }
@@ -132,6 +133,7 @@ const GOOGLE_CAPS: Record<string, Capability> = {
   create_presentation: 'drive.create',
   edit_document: 'docs.edit',
   edit_spreadsheet: 'sheets.edit',
+  edit_presentation: 'slides.edit',
 }
 
 function stubbed(tool: AnyTool, calls: string[], c: EvalCase): AnyTool {

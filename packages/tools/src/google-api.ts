@@ -56,6 +56,13 @@ export async function googleApi(
   if (res.status === 403 && JSON.stringify(json ?? '').includes('insufficient')) {
     throw new NeedsConnectionError(capabilities, 'missing_permission')
   }
+  // The API itself is switched off in the Cloud project (e.g. the Docs API was never
+  // enabled). Not the user's fault and not a permission they can grant: say so plainly.
+  if (res.status === 403 && /SERVICE_DISABLED|accessNotConfigured|has not been used in project|is disabled/.test(JSON.stringify(json ?? ''))) {
+    const api = /(Google [A-Za-z ]+ API)/.exec(JSON.stringify(json))?.[1] ?? 'This Google API'
+    ctx.logger.error({ status: 403, api }, 'google api disabled in the cloud project')
+    throw new GoogleApiError(403, `${api} is not enabled in the app's Google Cloud project. Tell the user the admin needs to enable it; nothing was changed.`)
+  }
   if (!res.ok) {
     const message = (json as { error?: { message?: string } } | undefined)?.error?.message ?? `HTTP ${res.status}`
     throw new GoogleApiError(res.status, `google api: ${message}`)

@@ -22,6 +22,7 @@ const DRIVE_FILE = 'https://www.googleapis.com/auth/drive.file'
 // Edit any Doc / Sheet the user can access. Sensitive, not restricted like full `drive`.
 const DOCS = 'https://www.googleapis.com/auth/documents'
 const SHEETS = 'https://www.googleapis.com/auth/spreadsheets'
+const SLIDES = 'https://www.googleapis.com/auth/presentations'
 
 /** Narrowest scope that grants each capability (PRD: request the narrowest scopes possible). */
 export const CAPABILITY_SCOPE: Record<Capability, string> = {
@@ -33,6 +34,7 @@ export const CAPABILITY_SCOPE: Record<Capability, string> = {
   'drive.create': DRIVE_FILE,
   'docs.edit': DOCS,
   'sheets.edit': SHEETS,
+  'slides.edit': SLIDES,
 }
 
 /** Every Google capability, offered together on the consent screen. */
@@ -48,6 +50,7 @@ const SATISFIED_BY: Record<Capability, string[]> = {
   'drive.create': [DRIVE_FILE],
   'docs.edit': [DOCS],
   'sheets.edit': [SHEETS],
+  'slides.edit': [SLIDES],
 }
 
 export function grants(scopes: readonly string[], capability: Capability): boolean {

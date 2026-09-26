@@ -31,17 +31,19 @@ export function slideRequests(
   subtitle: string | undefined,
   first: { titleId?: string | undefined; subtitleId?: string | undefined },
   slides: SlideInput[],
+  /** Where the first new slide goes, and a prefix that keeps object ids unique in an existing deck. */
+  at: { startIndex: number; idPrefix: string } = { startIndex: 1, idPrefix: 'slide' },
 ) {
   const requests: object[] = []
   if (first.titleId) requests.push({ insertText: { objectId: first.titleId, text: deckTitle } })
   if (first.subtitleId && subtitle) requests.push({ insertText: { objectId: first.subtitleId, text: subtitle } })
   slides.forEach((slide, i) => {
-    const id = `slide_${i}`
+    const id = `${at.idPrefix}_${i}`
     const bullets = (slide.bullets ?? []).filter((b) => b.trim())
     requests.push({
       createSlide: {
         objectId: id,
-        insertionIndex: i + 1,
+        insertionIndex: at.startIndex + i,
         slideLayoutReference: { predefinedLayout: bullets.length ? 'TITLE_AND_BODY' : 'TITLE_ONLY' },
         placeholderIdMappings: [
           { layoutPlaceholder: { type: 'TITLE' }, objectId: `${id}_title` },
