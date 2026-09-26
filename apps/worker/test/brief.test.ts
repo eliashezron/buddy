@@ -18,6 +18,10 @@ describe('daily brief scheduling', () => {
     expect(briefDue(tg({ lastBriefOn: '2026-09-27' }), NOW)).toBeNull()
     expect(briefDue(tg({ lastBriefOn: '2026-09-26' }), NOW)).toBe('2026-09-27')
     expect(briefDue(tg({ briefEnabled: false }), NOW)).toBeNull()
+    // Only within 3 h of the brief time: no "morning" brief in the evening (e.g. right after a deploy).
+    expect(briefDue(tg({ briefTime: '04:31' }), NOW)).toBe('2026-09-27')
+    expect(briefDue(tg({ briefTime: '04:30' }), NOW)).toBeNull()
+    expect(briefDue(tg(), new Date('2026-09-27T15:00:00Z'))).toBeNull()
     // Someone in New York at 00:30 isn't due yet.
     expect(briefDue(tg({ timezone: 'America/New_York' }), NOW)).toBeNull()
     expect(briefDue(tg({ timezone: 'Not/AZone' }), NOW)).toBeNull()

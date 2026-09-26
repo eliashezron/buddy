@@ -18,6 +18,13 @@ export { briefPrompt } from '@wa/agent'
 
 /** Between two scheduler ticks, so a user is never skipped. */
 export const BRIEF_TICK_MS = 5 * 60_000
+/**
+ * A morning brief is only sent within this long after the brief time. Otherwise a deploy in
+ * the evening, or moving the brief earlier, would send a "morning" brief at night.
+ */
+export const BRIEF_SEND_WINDOW_MIN = 3 * 60
+
+const minutes = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5))
 /** A WhatsApp brief needs this much of the 24 h window left, so it isn't cut off mid-send. */
 const WINDOW_MARGIN_MS = 30 * 60_000
 const WINDOW_MS = 24 * 60 * 60_000
@@ -56,7 +63,8 @@ export function briefDue(user: BriefUser, now: Date): string | null {
   } catch {
     return null // unknown timezone: never guess
   }
-  if (user.lastBriefOn === clock.date || clock.time < user.briefTime) return null
+  const late = minutes(clock.time) - minutes(user.briefTime)
+  if (user.lastBriefOn === clock.date || late < 0 || late >= BRIEF_SEND_WINDOW_MIN) return null
   if (user.channel === 'whatsapp') {
     const last = user.lastInboundAt?.getTime() ?? 0
     if (now.getTime() - last > WINDOW_MS - WINDOW_MARGIN_MS) return null

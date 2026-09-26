@@ -23,7 +23,7 @@ Stored on `users`: `brief_enabled` (null = channel default), `brief_time`, `time
 ```
 maintenance queue, every 5 min ("brief-tick")
   → briefCandidates(): opted in, or Telegram and not opted out
-  → briefDue(): local time ≥ brief_time, not sent today (local date), WhatsApp window open
+  → briefDue(): within 3 h after brief_time (local), not sent today (local date), WhatsApp window open
   → inbound queue: { kind: 'brief', userId, date }  (job id = user + date: queued once a day)
 worker (per-user lock, like messages)
   → still due? Google connected?
@@ -37,4 +37,5 @@ Evals: `daily-brief` (reads calendar and email, no write tools), `brief-stop`, `
 ## Local test
 
 Ask the dev bot "send my daily brief at HH:MM" with a time a minute or two from now (in
-your timezone), then wait up to 5 minutes for the next tick.
+your timezone), then wait up to 5 minutes for the next tick. A brief is only sent within 3
+hours after its time, so a deploy or a change in the evening doesn't send one at night.
