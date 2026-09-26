@@ -28,10 +28,10 @@ function fixtureEvents(name: string, rebase = true): ChannelEvent[] {
 
 /** In-memory stand-in for @wa/db's repo, enough to exercise the handler's logic. */
 function memoryRepo() {
-  type U = { id: string; channel: ChannelName; externalId: string; displayName: string | null; timezone: string; lastInboundAt: Date | null; replyMode: string; createdAt: Date }
+  type U = { id: string; channel: ChannelName; externalId: string; displayName: string | null; timezone: string; lastInboundAt: Date | null; replyMode: string; briefEnabled: boolean | null; briefTime: string; lastBriefOn: string | null; createdAt: Date }
   const users = new Map<string, U>()
   const messages: { id: string; userId: string; channel: string; externalMessageId: string; direction: string; body: string | null; status?: string; type?: string }[] = []
-  const runs = new Map<string, { status: string; triggerMessageId: string }>()
+  const runs = new Map<string, { status: string; triggerMessageId: string | null }>()
   const actions: {
     id: string; userId: string; runId: string; tool: string; risk: string; status: string
     input: unknown; result: unknown; undoExpiresAt: Date | null; createdAt: Date
@@ -43,7 +43,7 @@ function memoryRepo() {
     async upsertUserOnInbound({ channel, externalId, displayName, at, timezone }) {
       let u = users.get(key(channel, externalId))
       if (!u) {
-        u = { id: `user_${++seq}`, channel, externalId, displayName: displayName ?? null, timezone, lastInboundAt: at, replyMode: 'match', createdAt: new Date() }
+        u = { id: `user_${++seq}`, channel, externalId, displayName: displayName ?? null, timezone, lastInboundAt: at, replyMode: 'match', briefEnabled: null, briefTime: '07:00', lastBriefOn: null, createdAt: new Date() }
         users.set(key(channel, externalId), u)
       } else if (!u.lastInboundAt || u.lastInboundAt < at) u.lastInboundAt = at
       return u
@@ -96,6 +96,19 @@ function memoryRepo() {
     async getMessageById(id) {
       const m = messages.find((x) => x.id === id)
       return m ? ({ ...m, type: m.type ?? 'text', status: m.status ?? null, errorCodes: null, sentAt: new Date(), createdAt: new Date() } as never) : null
+    },
+    async setDailyBrief(userId, patch) {
+      const u = [...users.values()].find((x) => x.id === userId)
+      if (!u) return
+      if (patch.enabled !== undefined) u.briefEnabled = patch.enabled
+      if (patch.time) u.briefTime = patch.time
+      if (patch.timezone) u.timezone = patch.timezone
+    },
+    async claimBrief(userId, date) {
+      const u = [...users.values()].find((x) => x.id === userId)
+      if (!u || u.lastBriefOn === date) return false
+      u.lastBriefOn = date
+      return true
     },
     async setReplyMode(userId, mode) {
       const u = [...users.values()].find((x) => x.id === userId)
@@ -931,6 +944,68 @@ describe('voice replies (PRD F3)', () => {
     const t = setup(async () => script.shift()!, { tools: [setReplyMode] as never })
     for (const e of fixtureEvents('telegram-text')) await t.handle(e)
     expect([...t.users.values()][0]!.replyMode).toBe('text')
+  })
+})
+
+describe('daily brief delivery', () => {
+  const NOW = new Date('2026-09-27T04:30:00Z') // 07:30 in Kampala
+  const google = (connected: boolean): Connectors => ({
+    forUser: () => ({
+      credentials: { accessToken: async () => 'tok' },
+      connections: { list: async () => (connected ? [{ provider: 'google' as const, capabilities: ['calendar.read' as const] }] : []), disconnect: async () => false },
+    }),
+    connectLink: async () => ({ url: 'https://x' }),
+  })
+  const tool = (name: string, risk: 'read' | 'low_write' | 'outbound') =>
+    defineTool({ name, description: name, risk, input: z.object({}), preview: () => '', execute: async () => ({ ok: true }) })
+
+  async function userWithBrief(connected: boolean) {
+    const offered: string[][] = []
+    const prompts: string[] = []
+    const t = setup(
+      async (params) => {
+        offered.push((params.tools ?? []).map((x) => (x as { name: string }).name))
+        const last = params.messages.at(-1)!
+        prompts.push(typeof last.content === 'string' ? last.content : '')
+        return reply('Today: Standup at 09:00. No urgent email.')
+      },
+      { connectors: google(connected), now: () => NOW, tools: [tool('calendar_list_events', 'read'), tool('create_calendar_event', 'low_write'), tool('gmail_send_email', 'outbound')] },
+    )
+    const [hello] = fixtureEvents('telegram-text')
+    await t.handle(hello!)
+    const user = [...t.users.values()][0]!
+    offered.length = 0
+    prompts.length = 0
+    return { t, user, offered, prompts, event: { kind: 'brief' as const, userId: user.id, date: '2026-09-27', channel: user.channel, from: user.externalId } }
+  }
+
+  it('drafts with read-only tools only, sends it with the opt-out note, and never twice', async () => {
+    const { t, offered, prompts, event, user } = await userWithBrief(true)
+    const before = t.tg.sent.length
+    await t.handle(event)
+    expect(offered).toEqual([['calendar_list_events']])
+    expect(prompts[0]).toContain('today, 2026-09-27')
+    const brief = t.tg.sent.at(-1)!.text
+    expect(brief).toContain('Today: Standup at 09:00.')
+    expect(brief).toContain('stop the daily brief')
+    expect(user.lastBriefOn).toBe('2026-09-27')
+
+    await t.handle(event) // redelivered / racing tick
+    expect(t.tg.sent.length).toBe(before + 1)
+  })
+
+  it('skips users without Google connected, and users who turned it off', async () => {
+    const off = await userWithBrief(false)
+    const before = off.t.tg.sent.length
+    await off.t.handle(off.event)
+    expect(off.t.tg.sent.length).toBe(before)
+    expect(off.user.lastBriefOn).toBeNull()
+
+    const stopped = await userWithBrief(true)
+    stopped.user.briefEnabled = false
+    const n = stopped.t.tg.sent.length
+    await stopped.t.handle(stopped.event)
+    expect(stopped.t.tg.sent.length).toBe(n)
   })
 })
 

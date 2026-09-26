@@ -5,6 +5,7 @@ import {
   createLocalCipher,
   createLogger,
   envSchema,
+  jobIdFor,
   loadConfigOrExit,
   publicBaseUrl,
   QUEUES,
@@ -19,6 +20,7 @@ import { BotApiClient, botIdFromToken, createTelegramChannel } from '@wa/telegra
 import { CloudApiClient, createWhatsAppChannel } from '@wa/whatsapp'
 import { createResponsesMessage, type CreateMessage } from '@wa/agent'
 import { createElevenLabsSpeechToText, createElevenLabsTextToSpeech } from '@wa/speech'
+import { BRIEF_TICK_MS, enqueueDueBriefs } from './brief.js'
 import { createInboundHandler, type Connectors } from './inbound.js'
 
 const config = loadConfigOrExit(envSchema)
@@ -128,9 +130,23 @@ inbound.on('error', (err) => logger.error({ err }, 'inbound worker error'))
 // Retention: drop message bodies after MESSAGE_RETENTION_DAYS (PRD, security and privacy).
 const maintenanceQueue = new Queue(QUEUES.maintenance, { connection })
 await maintenanceQueue.upsertJobScheduler('purge-message-bodies', { every: 6 * 60 * 60_000 }, { name: 'purge' })
+// Daily brief (brief.ts): every few minutes, queue the briefs that are due.
+await maintenanceQueue.upsertJobScheduler('daily-brief', { every: BRIEF_TICK_MS }, { name: 'brief-tick' })
+const inboundProducer = new Queue<QueueEvent>(QUEUES.inbound, { connection })
 const maintenance = new Worker(
   QUEUES.maintenance,
-  async () => {
+  async (job) => {
+    if (job.name === 'brief-tick') {
+      const queued = await enqueueDueBriefs({
+        candidates: () => repo.briefCandidates(),
+        enqueue: async (event) => {
+          await inboundProducer.add('brief', event, { jobId: jobIdFor(event), removeOnComplete: { age: 3 * 24 * 60 * 60 }, removeOnFail: { age: 7 * 24 * 60 * 60 } })
+        },
+        now: new Date(),
+      })
+      if (queued) logger.info({ queued }, 'daily briefs queued')
+      return
+    }
     const cutoff = new Date(Date.now() - config.MESSAGE_RETENTION_DAYS * 24 * 60 * 60_000)
     const purged = await repo.purgeBodiesBefore(cutoff)
     logger.info({ purged }, 'retention purge done')
@@ -161,6 +177,7 @@ async function shutdown(signal: string) {
     await Promise.all([inbound.close(true), maintenance.close(true)])
   }
   await maintenanceQueue.close()
+  await inboundProducer.close()
   connection.disconnect()
   await closeDb()
   logger.info('worker stopped')

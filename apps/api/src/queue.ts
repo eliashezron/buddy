@@ -1,7 +1,8 @@
-import { createHash } from 'node:crypto'
 import { Queue } from 'bullmq'
 import { Redis } from 'ioredis'
-import { QUEUES, type QueueEvent } from '@wa/core'
+import { jobIdFor, QUEUES, type QueueEvent } from '@wa/core'
+
+export { jobIdFor }
 
 const DEDUP_WINDOW_MS = 3 * 24 * 60 * 60_000
 
@@ -10,15 +11,6 @@ const DEDUP_WINDOW_MS = 3 * 24 * 60 * 60_000
  * completed jobs are kept for the dedup window, so a redelivered webhook adds
  * nothing. The worker's unique index on wa_message_id is the second line.
  */
-export function jobIdFor(event: QueueEvent): string {
-  const key =
-    event.kind === 'message'
-      ? `m:${event.message.channel}:${event.message.id}`
-      : event.kind === 'status'
-        ? `s:${event.status.channel}:${event.status.id}:${event.status.status}`
-        : `c:${event.id}`
-  return `${event.kind}-${createHash('sha256').update(key).digest('hex').slice(0, 40)}`
-}
 
 export function createInboundQueue(redisUrl: string) {
   const connection = new Redis(redisUrl, { maxRetriesPerRequest: 3, enableOfflineQueue: false })

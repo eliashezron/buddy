@@ -6,6 +6,7 @@ import {
   MediaTooLargeError,
   parseApprovalButton,
   type AnyTool,
+  type BriefEvent,
   type Capability,
   type Channel,
   type ChannelName,
@@ -25,6 +26,7 @@ import {
 } from '@wa/core'
 import type { Repo, User } from '@wa/db'
 import { createApprovals } from './approvals.js'
+import { briefDue, briefFooter, briefPrompt } from './brief.js'
 import { KeyedLock } from './lock.js'
 
 export type InboundRepo = Pick<
@@ -45,6 +47,8 @@ export type InboundRepo = Pick<
   | 'decideApproval'
   | 'setMessageBody'
   | 'setReplyMode'
+  | 'setDailyBrief'
+  | 'claimBrief'
 >
 
 /** Google (or other) connectors for one user. Absent when no connector is configured. */
@@ -136,6 +140,8 @@ export function welcomeText(name?: string): string {
     'Ask me to look things up (prices, opening hours, news, places, how-tos) or send me a link to summarise. ' +
       "I can also check your calendar and email, find and read your Google Docs, Sheets and Slides, and create new ones: " +
       "I'll ask for access the first time you need it. Notion is coming soon.",
+    '',
+    'Once Google is connected, I can also send you a short brief every morning (just ask, or say "stop the daily brief").',
     '',
     'I only see the messages you send me here.',
   ].join('\n')
@@ -241,7 +247,10 @@ export function createInboundHandler(deps: InboundDeps) {
       credentials: base.credentials,
       connections: base.connections,
       undo: undoFor(user),
-      preferences: { setReplyMode: (mode) => repo.setReplyMode(user.id, mode) },
+      preferences: {
+        setReplyMode: (mode) => repo.setReplyMode(user.id, mode),
+        setDailyBrief: (patch) => repo.setDailyBrief(user.id, patch),
+      },
     }
     return services
 
@@ -526,9 +535,56 @@ export function createInboundHandler(deps: InboundDeps) {
     else logger.debug({ channel: s.channel, msgId: s.id, status: s.status, applied }, 'status update')
   }
 
+  /**
+   * The daily brief (see brief.ts). Drafted with read-only tools, then the day is claimed
+   * (one conditional UPDATE), then sent: a retry or a racing tick can't send it twice, and a
+   * failure before the claim is simply retried. No connect links: the user didn't ask.
+   */
+  async function handleBrief(e: BriefEvent, job: JobInfo) {
+    const user = await repo.getUserById(e.userId)
+    if (!user || briefDue(user, now()) !== e.date) return // settings changed, or already sent
+    const log = logger.child({ channel: user.channel, brief: e.date })
+    const connections = deps.connectors ? await deps.connectors.forUser(user.id).connections.list() : []
+    if (!connections.some((c) => c.provider === 'google')) {
+      log.info('daily brief skipped: google not connected')
+      return
+    }
+    const runId = await repo.createRun({ userId: user.id, triggerMessageId: null, model: deps.model })
+    let result
+    try {
+      result = await runAgent({
+        createMessage: deps.createMessage,
+        model: deps.model,
+        // System-initiated: read-only, so nothing in an email or event can make it act.
+        tools: deps.tools.filter((t) => t.risk === 'read'),
+        actions: { create: (a) => repo.createAction({ ...a, userId: user.id, runId }), update: (id, patch) => repo.updateAction(id, patch) },
+        logger: log.child({ runId }),
+        runId,
+        user: { id: user.id, timezone: user.timezone, ...(user.displayName ? { name: user.displayName } : {}) },
+        channel: user.channel,
+        services: servicesFor(user),
+        history: [],
+        message: { text: briefPrompt(e.date) },
+      })
+    } catch (err) {
+      await repo.finishRun(runId, { status: 'failed', inputTokens: 0, outputTokens: 0, error: String(err) })
+      if (!job.finalAttempt && isTransientModelError(err)) throw err
+      log.error({ err, runId }, 'daily brief failed')
+      return
+    }
+    if (result.status !== 'succeeded' || !(await repo.claimBrief(user.id, e.date))) {
+      await repo.finishRun(runId, { ...storedUsage(result.usage), status: result.status })
+      return
+    }
+    await replyInMode(user, `${result.reply}${briefFooter(user)}`, { spoken: false, log })
+    await repo.finishRun(runId, { ...storedUsage(result.usage), status: result.status })
+    log.info({ runId, tools: result.toolCalls.map((t) => `${t.name}:${t.outcome}`) }, 'daily brief sent')
+  }
+
   return async function handle(event: QueueEvent, job: JobInfo = { finalAttempt: true }) {
     if (event.kind === 'status') return handleStatus(event.status)
     if (event.kind === 'connection') return perUser.run(`user:${event.userId}`, () => handleConnection(event, job))
+    if (event.kind === 'brief') return perUser.run(`${event.channel}:${event.from}`, () => handleBrief(event, job))
     // One conversation at a time per user, so quick follow-ups see earlier replies.
     const { channel, from } = event.message
     return perUser.run(`${channel}:${from}`, () => handleMessage(event.message, job))

@@ -64,6 +64,13 @@
       "when": 1790432112607,
       "tag": "0008_wild_hulk",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1790436050202,
+      "tag": "0009_abandoned_wolfpack",
+      "breakpoints": true
     }
   ]
 }

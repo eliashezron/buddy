@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import type { ChannelEvent } from './channel.js'
 import type { Capability } from './connections.js'
 
@@ -32,5 +33,32 @@ export interface ConnectionEvent {
   account: string | null
 }
 
+/** The scheduler found this user's daily brief due (worker: maintenance tick → inbound queue). */
+export interface BriefEvent {
+  kind: 'brief'
+  userId: string
+  /** Local date the brief is for (YYYY-MM-DD); with userId, the dedup key. */
+  date: string
+  /** For the per-user lock, which is keyed like messages. */
+  channel: string
+  from: string
+}
+
 /** Everything that goes on the inbound queue. */
-export type QueueEvent = ChannelEvent | ConnectionEvent
+export type QueueEvent = ChannelEvent | ConnectionEvent | BriefEvent
+
+/**
+ * Queue job id: redelivered events map to the same id, so they are processed once.
+ * A brief's id is its user and local date, so a day's brief is queued at most once.
+ */
+export function jobIdFor(event: QueueEvent): string {
+  const key =
+    event.kind === 'message'
+      ? `m:${event.message.channel}:${event.message.id}`
+      : event.kind === 'status'
+        ? `s:${event.status.channel}:${event.status.id}:${event.status.status}`
+        : event.kind === 'brief'
+          ? `b:${event.userId}:${event.date}`
+          : `c:${event.id}`
+  return `${event.kind}-${createHash('sha256').update(key).digest('hex').slice(0, 40)}`
+}

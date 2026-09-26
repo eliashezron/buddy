@@ -114,4 +114,24 @@ describe.skipIf(!url)('connector repo (postgres)', () => {
     expect((await repo.decideApproval({ actionId: c, userId, decision: 'approve', now })).kind).toBe('expired')
     expect((await repo.decideApproval({ actionId: c, userId, decision: 'approve', now })).kind).toBe('already_decided')
   })
+
+  it('daily brief: candidates are opted-in users and Telegram users who did not opt out; a day is claimed once', async () => {
+    const at = new Date()
+    const mk = async (channel: 'telegram' | 'whatsapp', id: string) => (await repo.upsertUserOnInbound({ channel, externalId: `${id}${suffix}`, at, timezone: 'UTC' })).id
+    const tgDefault = await mk('telegram', 'bt1')
+    const tgOff = await mk('telegram', 'bt2')
+    const waDefault = await mk('whatsapp', 'bw1')
+    const waOn = await mk('whatsapp', 'bw2')
+    await repo.setDailyBrief(tgOff, { enabled: false })
+    await repo.setDailyBrief(waOn, { enabled: true, time: '06:30', timezone: 'Africa/Nairobi' })
+    const ids = new Set((await repo.briefCandidates()).map((u) => u.id))
+    expect([tgDefault, tgOff, waDefault, waOn].map((id) => ids.has(id))).toEqual([true, false, false, true])
+    const waUser = (await repo.briefCandidates()).find((u) => u.id === waOn)!
+    expect(waUser).toMatchObject({ briefTime: '06:30', timezone: 'Africa/Nairobi' })
+
+    // Four ticks race for the same day: one wins.
+    const claims = await Promise.all([1, 2, 3, 4].map(() => repo.claimBrief(tgDefault, '2026-09-27')))
+    expect(claims.filter(Boolean)).toHaveLength(1)
+    expect(await repo.claimBrief(tgDefault, '2026-09-28')).toBe(true)
+  })
 })

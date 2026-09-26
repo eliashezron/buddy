@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import {
+import { boolean,
   index,
   integer,
   jsonb,
@@ -28,6 +28,12 @@ export const users = pgTable('users', {
   lastInboundAt: timestamp('last_inbound_at', { withTimezone: true }),
   /** match (voice note → voice reply) | text | voice. See ReplyMode in @wa/core. */
   replyMode: text('reply_mode').notNull().default('match'),
+  /** Daily brief: null = the channel's default (on for Telegram; WhatsApp is opt-in). */
+  briefEnabled: boolean('brief_enabled'),
+  /** Local time (HH:MM, in `timezone`) the daily brief is due. */
+  briefTime: text('brief_time').notNull().default('07:00'),
+  /** Local date (YYYY-MM-DD) of the last brief: at most one a day. */
+  lastBriefOn: text('last_brief_on'),
   createdAt: createdAt(),
 }, (t) => [uniqueIndex('users_channel_external_id_key').on(t.channel, t.externalId)])
 

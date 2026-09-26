@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import type { ChannelName } from '@wa/core'
-import type { HistoryTurn } from '../src/index.js'
+import { briefPrompt, type HistoryTurn } from '../src/index.js'
 
 export interface EvalCase {
   id: string
@@ -286,6 +286,15 @@ export const cases: EvalCase[] = [
   },
   { id: 'reply-mode-text', message: 'From now on just reply to me in text, no voice notes please', expectTools: ['set_reply_mode'] },
   { id: 'reply-mode-voice', message: 'Please always answer me with voice notes', expectTools: ['set_reply_mode'] },
+  // Daily brief: the scheduled prompt (the worker also offers read-only tools only).
+  {
+    id: 'daily-brief',
+    message: briefPrompt('2026-09-24'),
+    expectTools: ['calendar_list_events', 'gmail_search'],
+    forbidTools: ['create_calendar_event', 'gmail_create_draft', 'gmail_send_email', 'send_calendar_invite', 'delete_calendar_event'],
+  },
+  { id: 'brief-stop', message: 'Stop sending me the daily brief', expectTools: ['set_daily_brief'] },
+  { id: 'brief-time', message: 'Send my morning brief at 6:30 instead, I am in Nairobi now', expectTools: ['set_daily_brief'] },
   {
     id: 'not-connected-no-link',
     message: "What's on my calendar today?",
