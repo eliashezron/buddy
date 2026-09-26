@@ -71,6 +71,13 @@
       "when": 1790436050202,
       "tag": "0009_abandoned_wolfpack",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790437813277,
+      "tag": "0010_petite_meltdown",
+      "breakpoints": true
     }
   ]
 }

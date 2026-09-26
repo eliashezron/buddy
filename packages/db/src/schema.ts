@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { boolean,
+  customType,
   index,
   integer,
   jsonb,
@@ -64,6 +65,43 @@ export const messages = pgTable(
     uniqueIndex('messages_channel_external_id_key').on(t.channel, t.externalMessageId),
     index('messages_user_sent_at_idx').on(t.userId, t.sentAt),
   ],
+)
+
+const bytea = customType<{ data: Uint8Array; driverData: Buffer }>({
+  dataType: () => 'bytea',
+  toDriver: (value) => Buffer.from(value),
+  fromDriver: (value) => new Uint8Array(value),
+})
+
+/**
+ * Documents and images the user sent, kept only for a few hours so follow-up messages can
+ * refer to them ("add this receipt to my expenses"). Rows are deleted once `expires_at`
+ * passes; the message row stays, with its caption.
+ */
+export const attachments = pgTable(
+  'attachments',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    messageId: uuid('message_id')
+      .notNull()
+      .references(() => messages.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** image | pdf | text (see Attachment in @wa/core). */
+    kind: text('kind').notNull(),
+    mimeType: text('mime_type').notNull(),
+    filename: text('filename'),
+    sizeBytes: integer('size_bytes').notNull(),
+    /** image, pdf: the file. */
+    data: bytea('data'),
+    /** text: what we extracted. */
+    text: text('text'),
+    truncated: boolean('truncated').notNull().default(false),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('attachments_message_id_key').on(t.messageId), index('attachments_expires_at_idx').on(t.expiresAt)],
 )
 
 export const runStatus = pgEnum('run_status', ['running', 'succeeded', 'failed', 'refused'])

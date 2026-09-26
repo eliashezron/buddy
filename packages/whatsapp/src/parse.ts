@@ -37,6 +37,7 @@ function toInbound(m: RawInboundMessage, contactName?: string): InboundMessage {
     if (m.type === kind && media) {
       out.media = { kind, id: media.id }
       if (media.mime_type) out.media.mimeType = media.mime_type
+      if (media.filename) out.media.filename = media.filename
       if (media.caption) out.media.caption = media.caption
       if (media.voice !== undefined) out.media.voice = media.voice
     }

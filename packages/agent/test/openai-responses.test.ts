@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { createResponsesMessage, ModelProviderError } from '../src/openai-responses.js'
-import { isTransientModelError, type CreateMessageParams } from '../src/loop.js'
+import { createResponsesMessage, ModelProviderError, toResponsesInput } from '../src/openai-responses.js'
+import { buildMessages, isTransientModelError, type CreateMessageParams } from '../src/loop.js'
 
 const params = (over: Partial<CreateMessageParams> = {}): CreateMessageParams =>
   ({
@@ -93,6 +93,25 @@ describe('OpenAI Responses adapter (development provider)', () => {
     const bad = fakeFetch(200, { output: [{ type: 'function_call', call_id: 'c2', name: 't', arguments: '{not json' }] })
     const m2 = await createResponsesMessage({ apiKey: 'k', baseUrl: 'https://x', fetch: bad.impl })(params())
     expect(m2.content[0]).toMatchObject({ type: 'tool_use', input: { _unparsed: '{not json' } })
+  })
+
+  it('sends photos as input_image and PDFs as input_file, each after its label', () => {
+    const messages = buildMessages(
+      [{ role: 'user', text: '', attachments: [{ kind: 'image', mimeType: 'image/jpeg', data: new Uint8Array([1, 2]) }] }],
+      'add both to my expenses',
+      [{ kind: 'pdf', mimeType: 'application/pdf', filename: 'inv.pdf', data: new Uint8Array([3]) }],
+    )
+    const [item] = toResponsesInput(messages)
+    expect(item).toEqual({
+      role: 'user',
+      content: [
+        { type: 'input_text', text: expect.stringContaining('The user sent a photo') },
+        { type: 'input_image', image_url: 'data:image/jpeg;base64,AQI=', detail: 'auto' },
+        { type: 'input_text', text: expect.stringContaining('The user sent a PDF "inv.pdf"') },
+        { type: 'input_file', filename: 'inv.pdf', file_data: 'data:application/pdf;base64,Aw==' },
+        { type: 'input_text', text: 'add both to my expenses' },
+      ],
+    })
   })
 
   it('maps errors so the queue retries only transient ones', async () => {

@@ -134,4 +134,35 @@ describe.skipIf(!url)('connector repo (postgres)', () => {
     expect(claims.filter(Boolean)).toHaveLength(1)
     expect(await repo.claimBrief(tgDefault, '2026-09-28')).toBe(true)
   })
+
+  it('attachments: bytes round-trip, history includes captionless photos until they expire, newer inbound', async () => {
+    const u = (await repo.upsertUserOnInbound({ channel: 'telegram', externalId: `att${suffix}`, at: new Date(), timezone: 'UTC' })).id
+    const now = new Date()
+    const msg = (n: number, type: string, body: string | null) =>
+      repo.insertInboundMessage({ userId: u, channel: 'telegram', externalMessageId: `att${suffix}:${n}`, type, body, sentAt: new Date(now.getTime() + n) })
+    const photo = await msg(1, 'image', null)
+    const doc = await msg(2, 'document', 'summarise')
+    const bytes = new Uint8Array([0xff, 0xd8, 0, 1, 255])
+    await repo.saveAttachment({ messageId: photo.id, userId: u, attachment: { kind: 'image', mimeType: 'image/jpeg', data: bytes }, sizeBytes: 5, expiresAt: new Date(now.getTime() + 60_000) })
+    // A redelivery keeps the first copy.
+    await repo.saveAttachment({ messageId: photo.id, userId: u, attachment: { kind: 'image', mimeType: 'image/png', data: new Uint8Array([1]) }, sizeBytes: 1, expiresAt: new Date(now.getTime() + 60_000) })
+    await repo.saveAttachment({ messageId: doc.id, userId: u, attachment: { kind: 'text', mimeType: 'text/csv', filename: 'a.csv', text: 'a,b', truncated: true }, sizeBytes: 3, expiresAt: new Date(now.getTime() - 1) })
+
+    expect(await repo.hasNewerInbound(u, photo.id)).toBe(true)
+    expect(await repo.hasNewerInbound(u, doc.id)).toBe(false)
+    const text = await msg(3, 'text', 'total?')
+    const history = await repo.recentConversation(u, { limit: 10, since: new Date(now.getTime() - 60_000), excludeId: text.id, now })
+    const kept = await repo.attachmentFor(photo.id, now)
+    expect(kept).toMatchObject({ sizeBytes: 5 })
+    expect(history).toEqual([
+      { id: photo.id, direction: 'inbound', body: '', attachment: { id: kept!.id, sizeBytes: 5 } },
+      { id: doc.id, direction: 'inbound', body: 'summarise' }, // its file expired
+    ])
+    const loaded = await repo.loadAttachments([kept!.id])
+    expect(loaded.get(kept!.id)).toEqual({ kind: 'image', mimeType: 'image/jpeg', data: bytes })
+
+    expect(await repo.deleteExpiredAttachments(now)).toBeGreaterThanOrEqual(1)
+    expect(await repo.attachmentFor(doc.id, new Date(0))).toBeNull()
+    expect(await repo.attachmentFor(photo.id, now)).not.toBeNull()
+  })
 })
