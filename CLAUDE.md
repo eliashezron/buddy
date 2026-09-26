@@ -24,6 +24,12 @@ These are product and legal constraints, not preferences. Do not work around the
     for 30 days and does not train on them; this is not zero-retention. Accepted for the
     Telegram pilot. **Revisit before WhatsApp goes live** (Meta's terms apply to
     WhatsApp data). The worker logs a warning at every boot while this is on.
+  - **Owner's exception (2026-09-26), voice notes:** production may transcribe voice
+    notes with ElevenLabs (`ELEVENLABS_API_KEY`, Scribe). Its zero-retention mode is
+    Enterprise-only, so requests fall under ElevenLabs' standard retention and training
+    terms (confirm them before relying on this). We never log or store the audio, and
+    never log transcripts. Same scope: accepted for the Telegram pilot; **revisit before
+    WhatsApp goes live** (move to Enterprise zero-retention or another vendor).
 - **Webhook route:** verify `X-Hub-Signature-256` as HMAC-SHA256 over the **raw**
   request body, before any JSON parsing, using a timing-safe comparison. Respond 200
   in under 1 second, enqueue, and process asynchronously. Never call a model inside
