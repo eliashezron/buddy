@@ -79,4 +79,13 @@ describe('loadConfig', () => {
   it('lets db:migrate run with only DATABASE_URL', () => {
     expect(loadConfig(dbEnvSchema, { DATABASE_URL: valid.DATABASE_URL }).DATABASE_URL).toBe(valid.DATABASE_URL)
   })
+
+  it('allows the OpenCode development provider only outside production, and only with its key', () => {
+    const dev = loadConfig(envSchema, { ...valid, LLM_PROVIDER: 'opencode', OPENCODE_API_KEY: 'oc_test', AGENT_MODEL: 'gpt-6-luna' })
+    expect(dev).toMatchObject({ LLM_PROVIDER: 'opencode', OPENCODE_BASE_URL: 'https://opencode.ai/zen', AGENT_MODEL: 'gpt-6-luna' })
+    expect(() => loadConfig(envSchema, { ...valid, LLM_PROVIDER: 'opencode' })).toThrow(/OPENCODE_API_KEY/)
+    // CLAUDE.md: zero-retention model vendors for user messages.
+    expect(() => loadConfig(envSchema, { ...valid, NODE_ENV: 'production', LLM_PROVIDER: 'opencode', OPENCODE_API_KEY: 'oc_test' })).toThrow(/development only/)
+    expect(loadConfig(envSchema, valid).LLM_PROVIDER).toBe('anthropic')
+  })
 })
