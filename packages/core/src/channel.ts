@@ -29,7 +29,17 @@ export interface InboundMessage {
   text?: string
   /** Bot command without the slash, e.g. `start` (Telegram). */
   command?: string
-  media?: { kind: string; id: string; mimeType?: string; caption?: string; voice?: boolean; durationSec?: number; sizeBytes?: number }
+  media?: {
+    kind: string
+    id: string
+    mimeType?: string
+    /** Documents: the file name the user's app sent. */
+    filename?: string
+    caption?: string
+    voice?: boolean
+    durationSec?: number
+    sizeBytes?: number
+  }
   /** Interactive button/list reply, or template quick-reply button. */
   reply?: { id: string; title: string }
   /** Telegram inline-button press: the callback query to answer. */

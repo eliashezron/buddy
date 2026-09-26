@@ -1,3 +1,4 @@
+export * from './attachments.js'
 export * from './channel.js'
 export * from './config.js'
 export * from './connections.js'

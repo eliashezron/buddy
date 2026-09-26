@@ -1,7 +1,9 @@
-import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, ne, or } from 'drizzle-orm'
+import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from 'drizzle-orm'
+import type { Attachment, AttachmentKind } from '@wa/core'
 import type { Db } from './client.js'
 import {
   actions,
+  attachments,
   agentRuns,
   connections,
   messages,
@@ -169,21 +171,109 @@ export function createRepo(db: Db) {
     },
 
     /** Up to `limit` messages with bodies since `since`, oldest first, excluding the one being handled. */
-    async recentConversation(userId: string, opts: { limit: number; since: Date; excludeId: string }) {
+    /**
+     * The conversation so far, oldest first: messages with text, and files still kept
+     * (a photo sent without a caption has no body). The file itself is loaded separately
+     * with `loadAttachments`, so callers choose how many files go to the model.
+     */
+    async recentConversation(userId: string, opts: { limit: number; since: Date; excludeId: string; now: Date }) {
       const rows = await db
-        .select({ direction: messages.direction, body: messages.body })
+        .select({
+          id: messages.id,
+          direction: messages.direction,
+          body: messages.body,
+          attachmentId: attachments.id,
+          attachmentBytes: attachments.sizeBytes,
+        })
         .from(messages)
+        .leftJoin(attachments, and(eq(attachments.messageId, messages.id), gt(attachments.expiresAt, opts.now)))
         .where(
           and(
             eq(messages.userId, userId),
-            isNotNull(messages.body),
+            or(isNotNull(messages.body), isNotNull(attachments.id)),
             gte(messages.sentAt, opts.since),
             ne(messages.id, opts.excludeId),
           ),
         )
-        .orderBy(desc(messages.sentAt))
+        .orderBy(desc(messages.sentAt), desc(messages.createdAt))
         .limit(opts.limit)
-      return rows.reverse().map((r) => ({ direction: r.direction, body: r.body ?? '' }))
+      return rows.reverse().map((r) => ({
+        id: r.id,
+        direction: r.direction,
+        body: r.body ?? '',
+        ...(r.attachmentId ? { attachment: { id: r.attachmentId, sizeBytes: r.attachmentBytes ?? 0 } } : {}),
+      }))
+    },
+
+    /** Keeps a file the user sent until `expiresAt`. A redelivered message keeps the first copy. */
+    async saveAttachment(input: { messageId: string; userId: string; attachment: Attachment; sizeBytes: number; expiresAt: Date }) {
+      const a = input.attachment
+      await db
+        .insert(attachments)
+        .values({
+          messageId: input.messageId,
+          userId: input.userId,
+          kind: a.kind,
+          mimeType: a.mimeType,
+          filename: a.filename ?? null,
+          sizeBytes: input.sizeBytes,
+          data: a.data ?? null,
+          text: a.text ?? null,
+          truncated: a.truncated ?? false,
+          expiresAt: input.expiresAt,
+        })
+        .onConflictDoNothing({ target: attachments.messageId })
+    },
+
+    /** The file sent with a message, if it is still kept. */
+    async attachmentFor(messageId: string, now: Date): Promise<{ id: string; sizeBytes: number } | null> {
+      const row = await db.query.attachments.findFirst({
+        columns: { id: true, sizeBytes: true },
+        where: and(eq(attachments.messageId, messageId), gt(attachments.expiresAt, now)),
+      })
+      return row ?? null
+    },
+
+    async loadAttachments(ids: string[]): Promise<Map<string, Attachment>> {
+      if (!ids.length) return new Map()
+      const rows = await db.select().from(attachments).where(inArray(attachments.id, ids))
+      return new Map(
+        rows.map((r) => [
+          r.id,
+          {
+            kind: r.kind as AttachmentKind,
+            mimeType: r.mimeType,
+            ...(r.filename ? { filename: r.filename } : {}),
+            ...(r.data ? { data: r.data } : {}),
+            ...(r.text !== null ? { text: r.text } : {}),
+            ...(r.truncated ? { truncated: true } : {}),
+          },
+        ]),
+      )
+    },
+
+    /**
+     * Did the user send another message (text, voice or file) after this one? Photos sent
+     * together arrive as separate messages: only the last one is answered, with all of them.
+     */
+    async hasNewerInbound(userId: string, messageId: string): Promise<boolean> {
+      // Compared in SQL: created_at has microseconds, a JS Date only milliseconds.
+      const newer = await db.query.messages.findFirst({
+        columns: { id: true },
+        where: and(
+          eq(messages.userId, userId),
+          eq(messages.direction, 'inbound'),
+          ne(messages.id, messageId),
+          inArray(messages.type, ['text', 'audio', 'image', 'document']),
+          sql`${messages.createdAt} > (select m.created_at from messages m where m.id = ${messageId})`,
+        ),
+      })
+      return Boolean(newer)
+    },
+
+    async deleteExpiredAttachments(now: Date): Promise<number> {
+      const rows = await db.delete(attachments).where(lt(attachments.expiresAt, now)).returning({ id: attachments.id })
+      return rows.length
     },
 
     /** `triggerMessageId` is null for system-initiated runs (the daily brief). */

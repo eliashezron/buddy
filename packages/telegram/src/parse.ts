@@ -68,10 +68,19 @@ function toInbound(m: TelegramMessage, botId: string): InboundMessage {
     const value = m[key]
     if (!value) continue
     // Photos arrive as several sizes; the last is the largest.
-    const file = (Array.isArray(value) ? value.at(-1) : value) as { file_id: string; mime_type?: string; file_size?: number; duration?: number }
+    const file = (Array.isArray(value) ? value.at(-1) : value) as {
+      file_id: string
+      mime_type?: string
+      file_name?: string
+      file_size?: number
+      duration?: number
+    }
     out.type = kind
     out.media = { kind, id: file.file_id }
+    // Photos carry no MIME type: Telegram always re-encodes them as JPEG.
     if (file.mime_type) out.media.mimeType = file.mime_type
+    else if (key === 'photo') out.media.mimeType = 'image/jpeg'
+    if (file.file_name) out.media.filename = file.file_name
     if (file.duration !== undefined) out.media.durationSec = file.duration
     if (file.file_size !== undefined) out.media.sizeBytes = file.file_size
     if (key === 'voice') out.media.voice = true

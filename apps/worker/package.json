@@ -27,6 +27,7 @@
     "@wa/connectors": "workspace:*",
     "@wa/core": "workspace:*",
     "@wa/db": "workspace:*",
+    "@wa/files": "workspace:*",
     "@wa/speech": "workspace:*",
     "@wa/telegram": "workspace:*",
     "@wa/tools": "workspace:*",

@@ -1,4 +1,4 @@
-import { FAILURE_REPLY, isTransientModelError, runAgent, type ActionLog, type CreateMessage } from '@wa/agent'
+import { FAILURE_REPLY, isTransientModelError, runAgent, type ActionLog, type CreateMessage, type HistoryTurn } from '@wa/agent'
 import {
   CAPABILITIES,
   ChannelSendError,
@@ -6,6 +6,7 @@ import {
   MediaTooLargeError,
   parseApprovalButton,
   type AnyTool,
+  type Attachment,
   type BriefEvent,
   type Capability,
   type Channel,
@@ -25,8 +26,10 @@ import {
   type UndoService,
 } from '@wa/core'
 import type { Repo, User } from '@wa/db'
+import { fileFormat, maxBytesFor, toAttachment, UnsupportedFileError } from '@wa/files'
 import { createApprovals } from './approvals.js'
 import { briefDue, briefFooter, briefPrompt } from './brief.js'
+import { ATTACHMENT_SETTLE_MS, ATTACHMENT_TTL_MS, FILE_REPLIES, isFileMessage, pickAttachments } from './files.js'
 import { KeyedLock } from './lock.js'
 
 export type InboundRepo = Pick<
@@ -49,6 +52,10 @@ export type InboundRepo = Pick<
   | 'setReplyMode'
   | 'setDailyBrief'
   | 'claimBrief'
+  | 'saveAttachment'
+  | 'attachmentFor'
+  | 'loadAttachments'
+  | 'hasNewerInbound'
 >
 
 /** Google (or other) connectors for one user. Absent when no connector is configured. */
@@ -74,6 +81,8 @@ export interface InboundDeps {
   tts?: TextToSpeech
   historyLimit?: number
   historyWindowMs?: number
+  /** Test override for ATTACHMENT_SETTLE_MS. */
+  attachmentSettleMs?: number
   now?: () => Date
 }
 
@@ -125,8 +134,6 @@ export interface JobInfo {
 
 export const UNSUPPORTED_REPLIES: Record<string, string> = {
   audio: "I can't listen to voice notes yet. It's coming soon. For now, please type your request.",
-  image: "I can't look at images yet. Please describe what you need in a message.",
-  document: "I can't open documents yet. Please paste the text or tell me what you need.",
   video: "I can't watch videos yet. Please describe what you need in a message.",
   interactive: 'That button is no longer active. Tell me what you need and I will take it from there.',
   button: 'That button is no longer active. Tell me what you need and I will take it from there.',
@@ -138,6 +145,7 @@ export function welcomeText(name?: string): string {
     `Hi${name ? ` ${name}` : ''}! I'm your task assistant.`,
     '',
     'Ask me to look things up (prices, opening hours, news, places, how-tos) or send me a link to summarise. ' +
+      'Send me photos and files too (receipts, letters, PDFs, Word or Excel files) and tell me what to do with them. ' +
       "I can also check your calendar and email, find and read your Google Docs, Sheets and Slides, and create new ones: " +
       "I'll ask for access the first time you need it. Notion is coming soon.",
     '',
@@ -284,6 +292,35 @@ export function createInboundHandler(deps: InboundDeps) {
     }
   }
 
+  /**
+   * Earlier turns, with the photos and files still kept, and the trigger message's own file.
+   * Only the newest few files go to the model (pickAttachments); older ones become a note.
+   */
+  async function conversationFor(user: User, triggerMessageId: string): Promise<{ history: HistoryTurn[]; attachments: Attachment[] }> {
+    const t = now()
+    const [rows, current] = await Promise.all([
+      repo.recentConversation(user.id, {
+        limit: deps.historyLimit ?? 12,
+        since: new Date(t.getTime() - (deps.historyWindowMs ?? 6 * 60 * 60_000)),
+        excludeId: triggerMessageId,
+        now: t,
+      }),
+      repo.attachmentFor(triggerMessageId, t),
+    ])
+    const candidates = [...rows.flatMap((r) => (r.attachment ? [r.attachment] : [])), ...(current ? [current] : [])]
+    const picked = pickAttachments(candidates, current?.id ?? null)
+    const loaded = await repo.loadAttachments([...picked])
+    const history = rows.map((r): HistoryTurn => {
+      const role = r.direction === 'inbound' ? 'user' : 'assistant'
+      const file = r.attachment && loaded.get(r.attachment.id)
+      if (file) return { role, text: r.body, attachments: [file] }
+      if (r.attachment) return { role, text: `[An earlier file, no longer in view. Ask the user to send it again if you need it.]\n${r.body}`.trim() }
+      return { role, text: r.body }
+    })
+    const own = current && loaded.get(current.id)
+    return { history, attachments: own ? [own] : [] }
+  }
+
   /** Runs the agent on `text` for `user` and replies; sends a connect link if a tool needed one. */
   async function runAndReply(opts: {
     user: User
@@ -299,11 +336,7 @@ export function createInboundHandler(deps: InboundDeps) {
     job: JobInfo
   }) {
     const { user, log, job } = opts
-    const history = await repo.recentConversation(user.id, {
-      limit: deps.historyLimit ?? 12,
-      since: new Date(now().getTime() - (deps.historyWindowMs ?? 6 * 60 * 60_000)),
-      excludeId: opts.triggerMessageId,
-    })
+    const { history, attachments } = await conversationFor(user, opts.triggerMessageId)
     const runId = await repo.createRun({ userId: user.id, triggerMessageId: opts.triggerMessageId, model: deps.model })
     const actions: ActionLog = {
       create: (a) => repo.createAction({ ...a, userId: user.id, runId }),
@@ -325,8 +358,8 @@ export function createInboundHandler(deps: InboundDeps) {
         user: { id: user.id, timezone: user.timezone, ...(user.displayName ? { name: user.displayName } : {}) },
         channel: user.channel,
         services: servicesFor(user),
-        history: history.map((h) => ({ role: h.direction === 'inbound' ? 'user' : 'assistant', text: h.body })),
-        message: { text: opts.text, ...(opts.forwarded ? { forwarded: true } : {}) },
+        history,
+        message: { text: opts.text, ...(opts.forwarded ? { forwarded: true } : {}), ...(attachments.length ? { attachments } : {}) },
       })
     } catch (err) {
       stopTyping()
@@ -367,9 +400,8 @@ export function createInboundHandler(deps: InboundDeps) {
     await repo.finishRun(runId, { ...storedUsage(result.usage), status: result.status })
   }
 
-  async function handleMessage(m: InboundMessage, job: JobInfo) {
-    // platformMessageId, not id: Telegram ids embed the chat id, which is the user's Telegram id.
-    const log = logger.child({ channel: m.channel, msgId: m.platformMessageId, type: m.type })
+  /** Stores an inbound message; null when it was already handled (a redelivery). */
+  async function storeInbound(m: InboundMessage, log: Logger) {
     const user = await repo.upsertUserOnInbound({
       channel: m.channel,
       externalId: m.from,
@@ -387,8 +419,97 @@ export function createInboundHandler(deps: InboundDeps) {
     })
     if (!stored.isNew && (await repo.hasCompletedRun(stored.id))) {
       log.info('duplicate delivery, already handled')
-      return
+      return null
     }
+    return { user, stored }
+  }
+
+  /**
+   * A photo or document: read it and keep it (ATTACHMENT_TTL_MS). Returns false after
+   * telling the user why it couldn't be read. Never logs the content or the file name.
+   */
+  async function keepFile(user: User, m: InboundMessage, messageId: string, log: Logger, job: JobInfo): Promise<boolean> {
+    if (await repo.attachmentFor(messageId, now())) return true // redelivery: already kept
+    const media = m.media!
+    const format = fileFormat(media.mimeType, media.filename)
+    if (!format) {
+      log.info({ mimeType: media.mimeType }, 'unsupported file type')
+      await reply(user, FILE_REPLIES.type)
+      return false
+    }
+    const tooLarge = format === 'image' ? FILE_REPLIES.imageTooLarge : FILE_REPLIES.documentTooLarge
+    const channel = channelFor(user.channel)
+    const stopTyping = channel.startTyping(m)
+    try {
+      const file = await channel.downloadMedia(m, { maxBytes: maxBytesFor(format) })
+      const attachment = await toAttachment(file, media.filename ? { filename: media.filename } : {})
+      await repo.saveAttachment({
+        messageId,
+        userId: user.id,
+        attachment,
+        sizeBytes: file.data.length,
+        expiresAt: new Date(now().getTime() + ATTACHMENT_TTL_MS),
+      })
+      log.info({ format, bytes: file.data.length, chars: attachment.text?.length, truncated: attachment.truncated }, 'file received')
+      return true
+    } catch (err) {
+      if (err instanceof MediaTooLargeError) {
+        await reply(user, tooLarge)
+        return false
+      }
+      if (err instanceof UnsupportedFileError) {
+        log.info({ format, reason: err.reason }, 'file could not be read')
+        await reply(user, err.reason === 'empty' ? FILE_REPLIES.empty : FILE_REPLIES.unreadable)
+        return false
+      }
+      const transient = !(err instanceof ChannelSendError && err.permanent)
+      log.warn({ err: err instanceof Error ? err.message : String(err), transient }, 'file download failed')
+      if (transient && !job.finalAttempt) throw err
+      await reply(user, FILE_REPLIES.failed)
+      return false
+    } finally {
+      stopTyping()
+    }
+  }
+
+  /**
+   * Photos and documents. Kept under the user's lock, then a short wait outside it: photos
+   * sent together arrive as separate messages, and only the last is answered (with all of
+   * them in view), so the user gets one reply, not one per photo.
+   */
+  async function handleFile(m: InboundMessage, job: JobInfo) {
+    const key = `${m.channel}:${m.from}`
+    const log = logger.child({ channel: m.channel, msgId: m.platformMessageId, type: m.type })
+    const kept = await perUser.run(key, async () => {
+      const s = await storeInbound(m, log)
+      if (!s || !(await keepFile(s.user, m, s.stored.id, log, job))) return null
+      return s
+    })
+    if (!kept) return
+    await new Promise((resolve) => setTimeout(resolve, deps.attachmentSettleMs ?? ATTACHMENT_SETTLE_MS))
+    await perUser.run(key, async () => {
+      if (await repo.hasNewerInbound(kept.user.id, kept.stored.id)) {
+        log.info('file answered with a later message')
+        return
+      }
+      await runAndReply({
+        user: kept.user,
+        triggerMessageId: kept.stored.id,
+        text: m.media?.caption ?? '',
+        forwarded: m.forwarded ?? false,
+        typingFor: m,
+        log,
+        job,
+      })
+    })
+  }
+
+  async function handleMessage(m: InboundMessage, job: JobInfo) {
+    // platformMessageId, not id: Telegram ids embed the chat id, which is the user's Telegram id.
+    const log = logger.child({ channel: m.channel, msgId: m.platformMessageId, type: m.type })
+    const s = await storeInbound(m, log)
+    if (!s) return
+    const { user, stored } = s
 
     // Approval buttons. Only a button payload counts; typed text never approves anything.
     const button = m.reply ? parseApprovalButton(m.reply.id) : null
@@ -586,6 +707,7 @@ export function createInboundHandler(deps: InboundDeps) {
     if (event.kind === 'connection') return perUser.run(`user:${event.userId}`, () => handleConnection(event, job))
     if (event.kind === 'brief') return perUser.run(`${event.channel}:${event.from}`, () => handleBrief(event, job))
     // One conversation at a time per user, so quick follow-ups see earlier replies.
+    if (isFileMessage(event.message)) return handleFile(event.message, job)
     const { channel, from } = event.message
     return perUser.run(`${channel}:${from}`, () => handleMessage(event.message, job))
   }

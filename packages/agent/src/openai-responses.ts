@@ -30,8 +30,14 @@ export class ModelProviderError extends Error {
   }
 }
 
+type InputPart =
+  | { type: 'input_text'; text: string }
+  | { type: 'input_image'; image_url: string; detail: 'auto' }
+  | { type: 'input_file'; filename: string; file_data: string }
+
 type InputItem =
   | { role: 'user' | 'assistant' | 'system'; content: string }
+  | { role: 'user'; content: InputPart[] }
   | { type: 'function_call'; call_id: string; name: string; arguments: string }
   | { type: 'function_call_output'; call_id: string; output: string }
 
@@ -45,7 +51,7 @@ const textOf = (content: unknown): string =>
           .join('\n')
       : ''
 
-/** Anthropic messages → Responses input items. Thinking blocks have no equivalent and are dropped. */
+/** Anthropic messages → Responses input items. Thinking blocks have no equivalent and are dropped. Photos and PDFs become input_image / input_file parts. */
 export function toResponsesInput(messages: CreateMessageParams['messages']): InputItem[] {
   const items: InputItem[] = []
   for (const m of messages) {
@@ -54,13 +60,28 @@ export function toResponsesInput(messages: CreateMessageParams['messages']): Inp
       continue
     }
     let text: string[] = []
+    let parts: InputPart[] = []
     const flushText = () => {
-      if (text.length) items.push({ role: m.role, content: text.join('\n') })
+      if (parts.length) {
+        if (text.length) parts.push({ type: 'input_text', text: text.join('\n') })
+        items.push({ role: 'user', content: parts })
+      } else if (text.length) items.push({ role: m.role, content: text.join('\n') })
       text = []
+      parts = []
+    }
+    // Text before a file stays before it (the label that says what the file is).
+    const pushPart = (part: InputPart) => {
+      if (text.length) parts.push({ type: 'input_text', text: text.join('\n') })
+      text = []
+      parts.push(part)
     }
     for (const block of m.content) {
       if (block.type === 'text') text.push(block.text)
-      else if (block.type === 'tool_use') {
+      else if (block.type === 'image' && block.source.type === 'base64') {
+        pushPart({ type: 'input_image', image_url: `data:${block.source.media_type};base64,${block.source.data}`, detail: 'auto' })
+      } else if (block.type === 'document' && block.source.type === 'base64') {
+        pushPart({ type: 'input_file', filename: block.title ?? 'document.pdf', file_data: `data:application/pdf;base64,${block.source.data}` })
+      } else if (block.type === 'tool_use') {
         flushText()
         items.push({ type: 'function_call', call_id: block.id, name: block.name, arguments: JSON.stringify(block.input ?? {}) })
       } else if (block.type === 'tool_result') {

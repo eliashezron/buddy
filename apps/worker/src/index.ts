@@ -127,9 +127,10 @@ const inbound = new Worker<QueueEvent>(
 inbound.on('failed', (job, err) => logger.error({ jobId: job?.id, attempts: job?.attemptsMade, err }, 'inbound job failed'))
 inbound.on('error', (err) => logger.error({ err }, 'inbound worker error'))
 
-// Retention: drop message bodies after MESSAGE_RETENTION_DAYS (PRD, security and privacy).
+// Retention: drop message bodies after MESSAGE_RETENTION_DAYS (PRD, security and privacy),
+// and photos and files once their few hours are up (files.ts). Hourly, so files don't linger.
 const maintenanceQueue = new Queue(QUEUES.maintenance, { connection })
-await maintenanceQueue.upsertJobScheduler('purge-message-bodies', { every: 6 * 60 * 60_000 }, { name: 'purge' })
+await maintenanceQueue.upsertJobScheduler('purge-message-bodies', { every: 60 * 60_000 }, { name: 'purge' })
 // Daily brief (brief.ts): every few minutes, queue the briefs that are due.
 await maintenanceQueue.upsertJobScheduler('daily-brief', { every: BRIEF_TICK_MS }, { name: 'brief-tick' })
 const inboundProducer = new Queue<QueueEvent>(QUEUES.inbound, { connection })
@@ -149,7 +150,8 @@ const maintenance = new Worker(
     }
     const cutoff = new Date(Date.now() - config.MESSAGE_RETENTION_DAYS * 24 * 60 * 60_000)
     const purged = await repo.purgeBodiesBefore(cutoff)
-    logger.info({ purged }, 'retention purge done')
+    const files = await repo.deleteExpiredAttachments(new Date())
+    logger.info({ purged, files }, 'retention purge done')
   },
   { connection, concurrency: 1 },
 )

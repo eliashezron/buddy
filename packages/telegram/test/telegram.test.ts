@@ -86,7 +86,18 @@ describe('parseTelegramUpdate', () => {
     u.message.photo = [{ file_id: 'small' }, { file_id: 'large' }]
     u.message.caption = 'menu'
     const e = parseTelegramUpdate(u).events[0]
-    expect(e?.kind === 'message' && e.message.media).toEqual({ kind: 'image', id: 'large', caption: 'menu' })
+    expect(e?.kind === 'message' && e.message.media).toEqual({ kind: 'image', id: 'large', mimeType: 'image/jpeg', caption: 'menu' })
+  })
+
+  it('keeps a document\'s file name and type', () => {
+    const u = fixture('telegram-text')
+    delete u.message.text
+    u.message.document = { file_id: 'doc', file_name: 'invoice.pdf', mime_type: 'application/pdf', file_size: 1234 }
+    const e = parseTelegramUpdate(u).events[0]
+    expect(e?.kind === 'message' && e.message).toMatchObject({
+      type: 'document',
+      media: { kind: 'document', id: 'doc', filename: 'invoice.pdf', mimeType: 'application/pdf', sizeBytes: 1234 },
+    })
   })
 
   it('never reads groups, and ignores other bots and other update types', () => {

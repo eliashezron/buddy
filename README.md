@@ -2,10 +2,11 @@
 
 A task assistant people reach on a WhatsApp Business number (official Cloud API only)
 or a Telegram bot (official Bot API). It looks things up on the web, and, once the user
-allows it, works with their Google Calendar and Gmail. Access is requested only when a
-request needs it (`docs/connectors.md`).
-Right now it answers questions by searching the web and reading pages. Calendar,
-email, Notion and payments come next. Scope: `docs/PRD.md`. Rules: `CLAUDE.md`.
+allows it, works with their Google Calendar, Gmail and Drive (Docs, Sheets, Slides). Access
+is requested only when a request needs it (`docs/connectors.md`). It takes voice notes
+and can answer with them (`docs/voice.md`), reads photos and documents the user sends
+(`docs/files.md`), and sends a daily brief (`docs/daily-brief.md`). Notion and payments
+come next. Scope: `docs/PRD.md`. Rules: `CLAUDE.md`.
 Platform notes: `docs/whatsapp-notes.md`, `docs/telegram-notes.md`.
 
 ## Quick start

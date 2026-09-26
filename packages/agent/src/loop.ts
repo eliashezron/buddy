@@ -4,6 +4,7 @@ import {
   decide,
   NeedsConnectionError,
   type AnyTool,
+  type Attachment,
   type ApprovalCardText,
   type Capability,
   type ChannelName,
@@ -13,10 +14,11 @@ import {
 } from '@wa/core'
 import { z } from 'zod'
 import { ModelProviderError } from './openai-responses.js'
-import { buildSystemPrompt, wrapForwarded } from './prompt.js'
+import { buildSystemPrompt, fileLabel, wrapFile, wrapForwarded } from './prompt.js'
 
 type BetaMessage = Anthropic.Beta.Messages.BetaMessage
 type BetaMessageParam = Anthropic.Beta.Messages.BetaMessageParam
+type BetaContentBlockParam = Anthropic.Beta.Messages.BetaContentBlockParam
 type BetaToolUseBlock = Anthropic.Beta.Messages.BetaToolUseBlock
 type BetaToolResultBlockParam = Anthropic.Beta.Messages.BetaToolResultBlockParam
 export type CreateMessageParams = Anthropic.Beta.Messages.MessageCreateParamsNonStreaming
@@ -46,6 +48,8 @@ export interface ActionLog {
 export interface HistoryTurn {
   role: 'user' | 'assistant'
   text: string
+  /** Photos and files the user sent with this message (untrusted data). */
+  attachments?: Attachment[]
 }
 
 export interface RunAgentInput {
@@ -61,7 +65,7 @@ export interface RunAgentInput {
   /** Per-user credentials, connections and undo for tools. */
   services: ToolServices
   history: HistoryTurn[]
-  message: { text: string; forwarded?: boolean }
+  message: { text: string; forwarded?: boolean; attachments?: Attachment[] }
   now?: Date
   signal?: AbortSignal
   maxTurns?: number
@@ -158,17 +162,51 @@ export function toolParam(tool: AnyTool): Anthropic.Beta.Messages.BetaTool {
   }
 }
 
-/** Collapses stored history into alternating, non-empty turns, starting with the user. */
-export function buildMessages(history: HistoryTurn[], current: string): BetaMessageParam[] {
-  const turns: HistoryTurn[] = []
-  // The API rejects empty turns, so blank history entries are dropped here.
-  for (const t of [...history, { role: 'user' as const, text: current }].filter((t) => t.text.trim())) {
+const base64 = (data: Uint8Array) => Buffer.from(data).toString('base64')
+
+/** A file as content blocks: a fenced label, then the image or PDF itself, or the fenced text. */
+export function attachmentBlocks(a: Attachment): BetaContentBlockParam[] {
+  if (a.kind === 'text' || !a.data) return [{ type: 'text', text: wrapFile(a) }]
+  const label: BetaContentBlockParam = { type: 'text', text: fileLabel(a) }
+  if (a.kind === 'image') {
+    const media_type = a.mimeType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'
+    return [label, { type: 'image', source: { type: 'base64', media_type, data: base64(a.data) } }]
+  }
+  return [
+    label,
+    {
+      type: 'document',
+      source: { type: 'base64', media_type: 'application/pdf', data: base64(a.data) },
+      ...(a.filename ? { title: a.filename } : {}),
+    },
+  ]
+}
+
+/**
+ * Collapses stored history into alternating, non-empty turns, starting with the user.
+ * Text-only turns stay plain strings; a turn with files becomes content blocks.
+ */
+export function buildMessages(history: HistoryTurn[], current: string, currentAttachments: Attachment[] = []): BetaMessageParam[] {
+  const turns: { role: HistoryTurn['role']; blocks: BetaContentBlockParam[] }[] = []
+  const all: HistoryTurn[] = [...history, { role: 'user', text: current, attachments: currentAttachments }]
+  for (const t of all) {
+    const blocks: BetaContentBlockParam[] = [
+      ...(t.role === 'user' ? (t.attachments ?? []).flatMap(attachmentBlocks) : []),
+      // The API rejects empty turns, so blank history entries are dropped here.
+      ...(t.text.trim() ? [{ type: 'text' as const, text: t.text }] : []),
+    ]
+    if (!blocks.length) continue
     const last = turns.at(-1)
-    if (last && last.role === t.role) last.text = `${last.text}\n\n${t.text}`
-    else turns.push({ ...t })
+    if (last && last.role === t.role) last.blocks.push(...blocks)
+    else turns.push({ role: t.role, blocks })
   }
   while (turns[0]?.role === 'assistant') turns.shift()
-  return turns.map((t) => ({ role: t.role, content: t.text }))
+  return turns.map((t) => ({
+    role: t.role,
+    content: t.blocks.every((b) => b.type === 'text')
+      ? t.blocks.map((b) => (b as Anthropic.Beta.Messages.BetaTextBlockParam).text).join('\n\n')
+      : t.blocks,
+  }))
 }
 
 function textOf(message: BetaMessage): string {
@@ -198,8 +236,8 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
     usage,
   })
 
-  const current = input.message.forwarded ? wrapForwarded(input.message.text) : input.message.text
-  const messages = buildMessages(input.history, current)
+  const current = input.message.forwarded && input.message.text.trim() ? wrapForwarded(input.message.text) : input.message.text
+  const messages = buildMessages(input.history, current, input.message.attachments)
   const promptCtx = { channel: input.channel, timezone: user.timezone, now, ...(user.name ? { userName: user.name } : {}) }
   const system = buildSystemPrompt(promptCtx)
 
