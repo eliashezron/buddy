@@ -195,10 +195,10 @@ export const cases: EvalCase[] = [
   },
   {
     id: 'cancel-with-guests',
-    // A future meeting (evals run on the real date, so a fixed past date would read as "already over").
+    // The eval clock is Thu 24 Sep 2026, so "next Monday" is Mon 28 Sep.
     history: [
       { role: 'user', text: "What's on my calendar next Monday?" },
-      { role: 'assistant', text: 'Next Monday: *Call with Kato* 15:00–15:30 (with kato@example.com).' },
+      { role: 'assistant', text: 'Mon 28 Sep: *Call with Kato* 15:00–15:30 (with kato@example.com).' },
     ],
     message: 'Cancel the call with Kato and let him know',
     expectTools: ['cancel_calendar_event'],
@@ -208,7 +208,7 @@ export const cases: EvalCase[] = [
         ok: true,
         timezone: 'Africa/Kampala',
         count: 1,
-        events: [{ id: 'e7', title: 'Call with Kato', when: 'Mon 2099-01-05, 15:00–15:30', allDay: false, guests: ['kato@example.com'] }],
+        events: [{ id: 'e7', title: 'Call with Kato', when: 'Mon 28 Sep, 15:00–15:30', allDay: false, guests: ['kato@example.com'] }],
       },
     },
   },
