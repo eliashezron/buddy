@@ -19,6 +19,7 @@ import { gmailSendEmail } from './gmail-send-email.js'
 import { gmailSearch } from './gmail-search.js'
 import { manageConnections } from './manage-connections.js'
 import { sendCalendarInvite } from './send-calendar-invite.js'
+import { setDailyBrief } from './set-daily-brief.js'
 import { setReplyMode } from './set-reply-mode.js'
 import { shareFile } from './share-file.js'
 import { undoLastAction } from './undo-last-action.js'
@@ -47,6 +48,7 @@ export { GoogleApiError } from './google-api.js'
 export { manageConnections } from './manage-connections.js'
 export { cancelCalendarEvent } from './cancel-calendar-event.js'
 export { sendCalendarInvite } from './send-calendar-invite.js'
+export { setDailyBrief } from './set-daily-brief.js'
 export { setReplyMode } from './set-reply-mode.js'
 export { shareFile } from './share-file.js'
 export { undoLastAction } from './undo-last-action.js'
@@ -62,7 +64,7 @@ export interface ToolDeps {
 
 /** Every tool available to the agent. One file per tool; each needs an eval in packages/agent/evals. */
 export function createTools(deps: ToolDeps): AnyTool[] {
-  const tools: AnyTool[] = [createWebSearchTool({ anthropic: deps.anthropic, model: deps.searchModel, ...(deps.responsesSearch ? { responses: deps.responsesSearch } : {}) }), fetchPage, undoLastAction, setReplyMode]
+  const tools: AnyTool[] = [createWebSearchTool({ anthropic: deps.anthropic, model: deps.searchModel, ...(deps.responsesSearch ? { responses: deps.responsesSearch } : {}) }), fetchPage, undoLastAction, setReplyMode, setDailyBrief]
   if (deps.google) tools.push(
       calendarListEvents,
       createCalendarEvent,

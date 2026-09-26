@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, ne } from 'drizzle-orm'
+import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, ne, or } from 'drizzle-orm'
 import type { Db } from './client.js'
 import {
   actions,
@@ -66,6 +66,35 @@ export function createRepo(db: Db) {
      * checks `hasCompletedRun`, because a failed attempt that BullMQ retries has
      * already stored the row but not finished the work.
      */
+    async setDailyBrief(userId: string, patch: { enabled?: boolean; time?: string; timezone?: string }) {
+      const set = {
+        ...(patch.enabled !== undefined ? { briefEnabled: patch.enabled } : {}),
+        ...(patch.time ? { briefTime: patch.time } : {}),
+        ...(patch.timezone ? { timezone: patch.timezone } : {}),
+      }
+      if (Object.keys(set).length) await db.update(users).set(set).where(eq(users.id, userId))
+    },
+
+    /** Users who may get a daily brief: opted in, or Telegram users who haven't opted out. */
+    async briefCandidates(): Promise<User[]> {
+      return db.query.users.findMany({
+        where: or(eq(users.briefEnabled, true), and(isNull(users.briefEnabled), eq(users.channel, 'telegram'))),
+      })
+    },
+
+    /**
+     * Claims today's brief: at most once per user per local date, even if two ticks or a
+     * retry race. Returns false if it was already claimed.
+     */
+    async claimBrief(userId: string, date: string): Promise<boolean> {
+      const rows = await db
+        .update(users)
+        .set({ lastBriefOn: date })
+        .where(and(eq(users.id, userId), or(isNull(users.lastBriefOn), ne(users.lastBriefOn, date))))
+        .returning({ id: users.id })
+      return rows.length > 0
+    },
+
     async setReplyMode(userId: string, mode: string) {
       await db.update(users).set({ replyMode: mode }).where(eq(users.id, userId))
     },
@@ -157,7 +186,8 @@ export function createRepo(db: Db) {
       return rows.reverse().map((r) => ({ direction: r.direction, body: r.body ?? '' }))
     },
 
-    async createRun(input: { userId: string; triggerMessageId: string; model: string }): Promise<string> {
+    /** `triggerMessageId` is null for system-initiated runs (the daily brief). */
+    async createRun(input: { userId: string; triggerMessageId: string | null; model: string }): Promise<string> {
       const [row] = await db.insert(agentRuns).values(input).returning({ id: agentRuns.id })
       return row!.id
     },

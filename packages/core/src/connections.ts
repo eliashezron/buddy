@@ -61,6 +61,8 @@ export interface UndoService {
 export interface PreferenceService {
   /** How the assistant replies to this user: match their mode, or always text / voice. */
   setReplyMode(mode: ReplyMode): Promise<void>
+  /** Daily brief settings; only the given fields change. `time` is HH:MM, `timezone` an IANA name. */
+  setDailyBrief(patch: { enabled?: boolean; time?: string; timezone?: string }): Promise<void>
 }
 
 export interface ToolServices {
@@ -80,6 +82,6 @@ export function noServices(): ToolServices {
     },
     connections: { list: async () => [], disconnect: async () => false },
     undo: { undoLatest: async () => ({ undone: false, reason: 'nothing to undo' }) },
-    preferences: { setReplyMode: async () => {} },
+    preferences: { setReplyMode: async () => {}, setDailyBrief: async () => {} },
   }
 }

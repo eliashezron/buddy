@@ -72,3 +72,15 @@ export function requestContext(ctx: PromptContext): string {
 export function wrapForwarded(text: string): string {
   return `The user forwarded this message:\n<forwarded_content>\n${text.replaceAll('</forwarded_content>', '')}\n</forwarded_content>`
 }
+
+/** What the agent is asked. The date is resolved so the model never guesses "today". */
+export function briefPrompt(date: string): string {
+  return [
+    `Write my daily brief for today, ${date}. Check my calendar for today and my email from the last day, then give me:`,
+    "1. Today's events, in order, with times.",
+    '2. Important unread emails: who, what, and what they need from me. Skip newsletters and notifications.',
+    '3. Anything waiting on a reply or decision from me.',
+    'Keep it short, for reading on a phone. If a section has nothing, leave it out; if nothing is notable, say so in one line.',
+    'This is a summary only: do not take any actions.',
+  ].join('\n')
+}
