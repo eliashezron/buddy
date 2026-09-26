@@ -117,6 +117,15 @@ export const cases: EvalCase[] = [
     message: 'Actually, undo that',
     expectTools: ['undo_last_action'],
     forbidTools: ['create_calendar_event'],
+    // If the model checks the calendar first, the event it just added is there.
+    stubs: {
+      calendar_list_events: {
+        ok: true,
+        timezone: 'Africa/Kampala',
+        count: 1,
+        events: [{ id: 'e5', title: 'Lunch with Kato', when: 'tomorrow, 13:00–14:00', allDay: false }],
+      },
+    },
   },
   {
     id: 'cal-delete',

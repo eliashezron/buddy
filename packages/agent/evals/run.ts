@@ -33,6 +33,9 @@ const logger = createLogger({ name: 'evals', level: 'silent' })
 const args = process.argv.slice(2)
 const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1]?.split(',')) : null
 
+/** Thu 24 Sep 2026, 09:00 in Kampala. */
+const EVAL_NOW = new Date('2026-09-24T06:00:00Z')
+
 const STUB_RESULTS: Record<string, unknown> = {
   web_search: { ok: true, query: '', summary: 'Stubbed findings for evaluation.', sources: [{ title: 'Example', url: 'https://example.com' }] },
   fetch_page: {
@@ -177,6 +180,9 @@ async function runCase(c: EvalCase): Promise<Outcome> {
     actions,
     logger,
     runId: `eval_${c.id}`,
+    // Fixed clock matching the stub data (Fri 25 Sep is "tomorrow"), so results don't depend on
+    // when the suite runs: a stub meeting at 15:00 today would otherwise read as already over.
+    now: EVAL_NOW,
     user: { id: 'eval', timezone: 'Africa/Kampala', name: 'Elias' },
     channel: c.channel ?? 'whatsapp',
     // Connected unless the case says otherwise, so outbound tools reach the approval step.
