@@ -56,6 +56,30 @@ photo / document message
   (gpt-6-luna), the adapter sends `input_image` and `input_file` parts. Both were checked
   live with a receipt photo and a PDF invoice.
 
+## Save to Drive
+
+After answering a photo or file, the bot adds a card: **📁 Save this photo to your Google
+Drive?** with **Save to Drive** and **Not now** buttons. It covers every file answered in
+that reply, so an album gets one card. The user can also just ask ("save this to my
+Drive"), and the model calls `save_file_to_drive` with the file ids it sees next to each
+file.
+
+- **What is saved:** the file as sent, not what the model read. A .docx stays a .docx and a
+  HEIC stays HEIC (`attachments.original`, kept only when it differs from the model's
+  version). Files without a name are saved as e.g. "Photo 2026-09-26 19.30.jpg" in the
+  user's timezone. Uploads are resumable, so files over Drive's 5 MB multipart limit work.
+- **The button:** an ordinary action awaiting approval (`approvals.ts`), so it is
+  single-use and the actions row exists before anything runs. It stays valid while the
+  files are kept (3 hours), unlike the 15 minutes for sending. A second press gets "That
+  was already done."
+- **Not connected yet:** pressing Save sends the Google link and puts the action back to
+  waiting (`error = needs_connection`, 15 minutes). When the user finishes connecting, it
+  completes by itself (`resumeAfterConnection`), with no second press needed.
+- **No card** when the request already saved the files, when Google isn't configured, or
+  when the run failed. The model is told the button exists, so it doesn't offer it too.
+- Saved files are private (`drive.file`: the app sees only files it created). "Undo" within
+  10 minutes moves them to the trash.
+
 ## Try it on the dev bot
 
 1. Send a photo of a receipt with the caption "what's the total?"
@@ -65,3 +89,7 @@ photo / document message
 5. From an iPhone, send a photo as a file (HEIC) and ask what's in it.
 6. Send a .zip, or a photo over 5 MB as a file: you should get the "can't open" or
    "too large" reply.
+7. Tap **Save to Drive** under a reply: you get the Drive link. Say "undo" to trash it.
+8. Send a Word file, save it, and open it in Drive: it's the original .docx.
+9. Send two photos together: one card, "Save these 2 files". Tap **Not now**.
+10. Send a photo and say "save this to my Drive": it's saved, and no card appears.

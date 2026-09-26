@@ -1,4 +1,4 @@
-import type { InboundMessage } from '@wa/core'
+import type { Attachment, InboundMessage } from '@wa/core'
 
 /**
  * Photos and documents the user sends. Each is read once when it arrives (packages/files),
@@ -48,4 +48,21 @@ export function pickAttachments(candidates: { id: string; sizeBytes: number }[],
     bytes += c.sizeBytes
   }
   return picked
+}
+
+const quoted = (name: string) => `"${name.length > 60 ? `${name.slice(0, 59)}…` : name}"`
+
+/** The "Save to Drive" card for the files just answered. `title` doubles as the done message. */
+export function saveOfferCard(files: Attachment[]): { preview: string; title: string } {
+  const [only] = files
+  const what =
+    files.length > 1
+      ? `these ${files.length} files`
+      : only?.filename
+        ? quoted(only.filename)
+        : only?.kind === 'image'
+          ? 'this photo'
+          : 'this file'
+  const saved = files.length > 1 ? `${files.length} files` : only?.filename ? quoted(only.filename) : only?.kind === 'image' ? 'the photo' : 'the file'
+  return { preview: `📁 Save ${what} to your Google Drive?`, title: `Saved ${saved} to your Google Drive` }
 }

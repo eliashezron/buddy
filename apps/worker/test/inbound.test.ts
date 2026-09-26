@@ -3,9 +3,10 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import Anthropic from '@anthropic-ai/sdk'
 import { describe, expect, it } from 'vitest'
+import { strToU8, zipSync } from 'fflate'
 import { z } from 'zod'
 import { FAILURE_REPLY, type CreateMessage } from '@wa/agent'
-import { createLogger, defineTool, NeedsConnectionError, type Attachment, type Capability, type ChannelEvent, type ChannelName, type ConnectionEvent, type SpeechToText, type TextToSpeech } from '@wa/core'
+import { createLogger, defineTool, NeedsConnectionError, type Attachment, type Capability, type ChannelEvent, type MediaFile, type ChannelName, type ConnectionEvent, type SpeechToText, type TextToSpeech } from '@wa/core'
 import { createTelegramChannel, FakeTelegramClient, parseTelegramUpdate, TelegramApiError } from '@wa/telegram'
 import { createWhatsAppChannel, FakeWhatsAppClient, parseWebhook } from '@wa/whatsapp'
 import { FILE_REPLIES } from '../src/files.js'
@@ -33,12 +34,12 @@ function memoryRepo() {
   const users = new Map<string, U>()
   const messages: { id: string; userId: string; channel: string; externalMessageId: string; direction: string; body: string | null; status?: string; type?: string }[] = []
   const runs = new Map<string, { status: string; triggerMessageId: string | null }>()
-  const attachments: { id: string; messageId: string; userId: string; attachment: Attachment; sizeBytes: number; expiresAt: Date }[] = []
+  const attachments: { id: string; messageId: string; userId: string; attachment: Attachment; original?: MediaFile; sizeBytes: number; expiresAt: Date }[] = []
   const keptFile = (messageId: string, now: Date) => attachments.find((a) => a.messageId === messageId && a.expiresAt > now)
   const actions: {
     id: string; userId: string; runId: string; tool: string; risk: string; status: string
     input: unknown; result: unknown; undoExpiresAt: Date | null; createdAt: Date
-    approvalExpiresAt?: Date; decidedAt?: Date
+    approvalExpiresAt?: Date; decidedAt?: Date; error?: string; card?: unknown
   }[] = []
   let seq = 0
   const key = (channel: string, id: string) => `${channel}:${id}`
@@ -91,7 +92,21 @@ function memoryRepo() {
       return file ? { id: file.id, sizeBytes: file.sizeBytes } : null
     },
     async loadAttachments(ids) {
-      return new Map(attachments.filter((a) => ids.includes(a.id)).map((a) => [a.id, a.attachment]))
+      return new Map(attachments.filter((a) => ids.includes(a.id)).map((a) => [a.id, { ...a.attachment, id: a.id }]))
+    },
+    async originalFiles(userId, ids, now) {
+      return attachments
+        .filter((a) => a.userId === userId && ids.includes(a.id) && a.expiresAt > now)
+        .map((a) => ({
+          id: a.id,
+          kind: a.attachment.kind,
+          mimeType: a.original?.mimeType ?? a.attachment.mimeType,
+          data: a.original?.data ?? a.attachment.data!,
+          ...(a.attachment.filename ? { filename: a.attachment.filename } : {}),
+        }))
+    },
+    async actionsAwaitingConnection(userId, now) {
+      return actions.filter((a) => a.userId === userId && a.status === 'awaiting_approval' && a.error === 'needs_connection' && a.approvalExpiresAt! > now) as never
     },
     async hasNewerInbound(userId, messageId) {
       const i = messages.findIndex((m) => m.id === messageId)
@@ -108,7 +123,7 @@ function memoryRepo() {
     async createAction(a) {
       const id = randomUUID()
       ++seq
-      actions.push({ id, userId: a.userId, runId: a.runId, tool: a.tool, risk: a.risk, status: a.status, input: a.input, result: null, undoExpiresAt: null, createdAt: new Date(Date.now() + seq) })
+      actions.push({ id, userId: a.userId, runId: a.runId, tool: a.tool, risk: a.risk, status: a.status, input: a.input, result: null, undoExpiresAt: null, createdAt: new Date(Date.now() + seq), ...(a.approvalExpiresAt ? { approvalExpiresAt: a.approvalExpiresAt } : {}) })
       return id
     },
     async updateAction(id, patch) {
@@ -1070,7 +1085,8 @@ describe('inbound handler: photos and documents', () => {
     const createMessage: CreateMessage = async (params) => {
       const last = params.messages.at(-1)!
       const blocks = typeof last.content === 'string' ? [{ type: 'text', text: last.content }] : last.content
-      seen.push(blocks.map((b) => (b.type === 'text' ? (b as { text: string }).text : `[${b.type}]`)))
+      // File ids are random: shown as "(file id: …)" and checked separately.
+      seen.push(blocks.map((b) => (b.type === 'text' ? (b as { text: string }).text.replace(/ \(file id: [^)]+\)/g, '') : `[${b.type}]`)))
       return reply(answer)
     }
     return { seen, createMessage }
@@ -1185,5 +1201,186 @@ describe('inbound handler: photos and documents', () => {
     await t.handle(event)
     expect(calls).toBe(1)
     expect(t.attachments).toHaveLength(1)
+  })
+})
+
+describe('inbound handler: Save to Drive', () => {
+  let nextId = 500
+  function tgPhoto(fileId: string, caption?: string): ChannelEvent {
+    const u = loadFixture('telegram-text')
+    delete u.message.text
+    u.message.message_id = nextId++
+    u.message.date = Math.floor(Date.now() / 1000)
+    u.message.photo = [{ file_id: fileId }]
+    if (caption) u.message.caption = caption
+    return parseTelegramUpdate(u, { botId: '1' }).events[0]!
+  }
+  function tgDocument(document: { file_id: string; file_name: string; mime_type: string }): ChannelEvent {
+    const u = loadFixture('telegram-text')
+    delete u.message.text
+    u.message.message_id = nextId++
+    u.message.date = Math.floor(Date.now() / 1000)
+    u.message.document = document
+    return parseTelegramUpdate(u, { botId: '1' }).events[0]!
+  }
+  const press = (data: string) =>
+    parseTelegramUpdate(
+      {
+        update_id: nextId++,
+        callback_query: {
+          id: `cb${nextId}`,
+          from: { id: 555000111, is_bot: false, first_name: 'Elias' },
+          message: { message_id: 2, date: 1790000000, chat: { id: 555000111, type: 'private' } },
+          data,
+        },
+      },
+      { botId: '1' },
+    ).events[0]!
+  const toolUse = (name: string, input: unknown) =>
+    ({
+      id: 'm',
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-opus-5',
+      content: [{ type: 'tool_use', id: 't1', name, input }],
+      stop_reason: 'tool_use',
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }) as unknown as Anthropic.Beta.Messages.BetaMessage
+
+  /** Stand-in for the real tool: records what it was given, as Drive would receive it. */
+  function driveTool(connected: () => boolean = () => true) {
+    const uploads: { name?: string; mimeType: string; bytes: number }[] = []
+    const tool = defineTool({
+      name: 'save_file_to_drive',
+      description: 'save',
+      risk: 'low_write',
+      input: z.object({ fileIds: z.array(z.string()).min(1) }),
+      preview: () => 'Save to Drive',
+      approveLabel: 'Save to Drive',
+      async execute({ fileIds }, ctx) {
+        await ctx.services.credentials.accessToken(['drive.create'])
+        const files = await ctx.services.files.originals(fileIds)
+        for (const f of files) uploads.push({ ...(f.filename ? { name: f.filename } : {}), mimeType: f.mimeType, bytes: f.data.length })
+        return { ok: true as const, saved: files.map((f, i) => ({ fileId: `d${i}`, name: f.filename ?? 'Photo', link: `https://drive.example/d${i}` })), link: 'https://drive.example/d0' }
+      },
+      async undo() {},
+    })
+    const connectors: Connectors = {
+      forUser: () => ({
+        credentials: {
+          accessToken: async (caps) => {
+            if (!connected()) throw new NeedsConnectionError(caps, 'not_connected')
+            return 'tok'
+          },
+        },
+        connections: { list: async () => [], disconnect: async () => false },
+      }),
+      connectLink: async () => ({ url: 'https://api.example/oauth/google/start?s=TOKEN' }),
+    }
+    return { tool, uploads, connectors }
+  }
+  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0])
+
+  async function photoAnswered(opts: { connected?: () => boolean } = {}) {
+    const { tool, uploads, connectors } = driveTool(opts.connected)
+    const t = setup(async () => reply('A receipt from Cafe Javas, UGX 33,500.'), { tools: [tool], connectors })
+    t.tg.files.set('p1', jpeg)
+    await t.handle(tgPhoto('p1'))
+    const offer = t.actions.find((a) => a.tool === 'save_file_to_drive')!
+    return { t, uploads, offer }
+  }
+
+  it('offers a Save to Drive button under the answer, holding the file ids, valid while the file is kept', async () => {
+    const { t, uploads, offer } = await photoAnswered()
+    const card = t.tg.sent.at(-1)!
+    expect(card.text).toBe('📁 Save this photo to your Google Drive?')
+    expect(card.buttons).toEqual([
+      [
+        { text: '✅ Save to Drive', data: `approve:${offer.id}` },
+        { text: '✖ Not now', data: `cancel:${offer.id}` },
+      ],
+    ])
+    expect(offer).toMatchObject({ risk: 'low_write', status: 'awaiting_approval', input: { fileIds: [t.attachments[0]!.id] } })
+    expect(offer.approvalExpiresAt!.getTime() - Date.now()).toBeGreaterThan(2.9 * 60 * 60_000)
+    expect(uploads).toEqual([])
+  })
+
+  it('Save to Drive saves the file and replies with the link; Not now leaves it', async () => {
+    const { t, uploads, offer } = await photoAnswered()
+    await t.handle(press(`approve:${offer.id}`))
+    expect(uploads).toEqual([{ mimeType: 'image/jpeg', bytes: 4 }])
+    expect(t.tg.sent.at(-1)!.text).toBe('✅ Saved the photo to your Google Drive.\nhttps://drive.example/d0\nSay "undo" within 10 minutes to reverse it.')
+    expect(offer.status).toBe('succeeded')
+    expect(offer.undoExpiresAt).toBeInstanceOf(Date)
+    // A second press does nothing more.
+    await t.handle(press(`approve:${offer.id}`))
+    expect(uploads).toHaveLength(1)
+    expect(t.tg.sent.at(-1)!.text).toBe('That was already done.')
+
+    const other = await photoAnswered()
+    await other.t.handle(press(`cancel:${other.offer.id}`))
+    expect(other.t.tg.sent.at(-1)!.text).toBe("OK, I've left it.")
+    expect(other.uploads).toEqual([])
+  })
+
+  it('saves the original file, not what the model read (Word text, HEIC → JPEG)', async () => {
+    const { tool, uploads, connectors } = driveTool()
+    const t = setup(async () => reply('A contract.'), { tools: [tool], connectors })
+    const docx = zipSync({ 'word/document.xml': strToU8('<w:document><w:p><w:t>Terms</w:t></w:p></w:document>') })
+    t.tg.files.set('d', docx)
+    await t.handle(tgDocument({ file_id: 'd', file_name: 'Contract.docx', mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }))
+    const offer = t.actions.find((a) => a.tool === 'save_file_to_drive')!
+    expect(t.tg.sent.at(-1)!.text).toBe('📁 Save "Contract.docx" to your Google Drive?')
+    await t.handle(press(`approve:${offer.id}`))
+    expect(uploads).toEqual([{ name: 'Contract.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', bytes: docx.length }])
+  })
+
+  it('photos sent together get one offer for all of them', async () => {
+    const { tool, connectors } = driveTool()
+    const t = setup(async () => reply('3 receipts.'), { tools: [tool], connectors })
+    for (const id of ['a', 'b', 'c']) t.tg.files.set(id, jpeg)
+    await Promise.all([t.handle(tgPhoto('a', 'receipts')), t.handle(tgPhoto('b')), t.handle(tgPhoto('c'))])
+    const offers = t.actions.filter((a) => a.tool === 'save_file_to_drive')
+    expect(offers).toHaveLength(1)
+    expect((offers[0]!.input as { fileIds: string[] }).fileIds).toHaveLength(3)
+    expect(t.tg.sent.at(-1)!.text).toBe('📁 Save these 3 files to your Google Drive?')
+  })
+
+  it('no offer when the request already saved the file, or without Google', async () => {
+    const { tool, connectors } = driveTool()
+    let fileId = ''
+    const script = [() => toolUse('save_file_to_drive', { fileIds: [fileId] }), () => reply('Saved: https://drive.example/d0')]
+    const t = setup(async () => script.shift()!(), { tools: [tool], connectors })
+    t.tg.files.set('p', jpeg)
+    const event = tgPhoto('p', 'save this to my drive')
+    // The file id is only known once kept; the scripted model reads it from the fake repo.
+    const run = t.handle(event)
+    await new Promise((r) => setTimeout(r, 0))
+    fileId = t.attachments[0]?.id ?? ''
+    await run
+    expect(t.actions.filter((a) => a.tool === 'save_file_to_drive').map((a) => a.status)).toEqual(['succeeded'])
+    expect(t.tg.sent.every((m) => !m.buttons)).toBe(true)
+
+    const noGoogle = setup(async () => reply('A photo.'), { tools: [tool] })
+    noGoogle.tg.files.set('p', jpeg)
+    await noGoogle.handle(tgPhoto('p'))
+    expect(noGoogle.actions).toEqual([])
+  })
+
+  it('not connected yet: sends the link, then saves by itself once Drive is connected', async () => {
+    let connected = false
+    const { t, uploads, offer } = await photoAnswered({ connected: () => connected })
+    await t.handle(press(`approve:${offer.id}`))
+    const texts = t.tg.sent.map((m) => m.text)
+    expect(texts).toContain("I need access to your Google Drive first. Connect with the link below, and I'll finish as soon as you're done.")
+    expect(t.tg.sent.at(-1)!.buttons?.[0]?.[0]).toMatchObject({ url: 'https://api.example/oauth/google/start?s=TOKEN' })
+    expect(offer).toMatchObject({ status: 'awaiting_approval', error: 'needs_connection' })
+
+    connected = true
+    const user = [...t.users.values()][0]!
+    await t.handle({ kind: 'connection', id: 'c1', outcome: 'connected', userId: user.id, triggerMessageId: null, requested: ['drive.create'], needed: ['drive.create'], granted: ['drive.create'], missing: [], account: null })
+    expect(uploads).toHaveLength(1)
+    expect(t.tg.sent.at(-1)!.text).toContain('✅ Saved the photo to your Google Drive.')
+    expect(offer.status).toBe('succeeded')
   })
 })

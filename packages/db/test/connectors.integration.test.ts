@@ -159,10 +159,45 @@ describe.skipIf(!url)('connector repo (postgres)', () => {
       { id: doc.id, direction: 'inbound', body: 'summarise' }, // its file expired
     ])
     const loaded = await repo.loadAttachments([kept!.id])
-    expect(loaded.get(kept!.id)).toEqual({ kind: 'image', mimeType: 'image/jpeg', data: bytes })
+    expect(loaded.get(kept!.id)).toEqual({ id: kept!.id, kind: 'image', mimeType: 'image/jpeg', data: bytes })
 
     expect(await repo.deleteExpiredAttachments(now)).toBeGreaterThanOrEqual(1)
     expect(await repo.attachmentFor(doc.id, new Date(0))).toBeNull()
     expect(await repo.attachmentFor(photo.id, now)).not.toBeNull()
+  })
+
+  it('original files: only the user\'s own, unexpired, as sent; offers waiting for a connection', async () => {
+    const now = new Date()
+    const mk = async (id: string) => (await repo.upsertUserOnInbound({ channel: 'telegram', externalId: `${id}${suffix}`, at: now, timezone: 'UTC' })).id
+    const [me, other] = [await mk('of1'), await mk('of2')]
+    const m1 = await repo.insertInboundMessage({ userId: me, channel: 'telegram', externalMessageId: `of${suffix}:1`, type: 'document', body: null, sentAt: now })
+    const m2 = await repo.insertInboundMessage({ userId: other, channel: 'telegram', externalMessageId: `of${suffix}:2`, type: 'image', body: null, sentAt: now })
+    const docx = new Uint8Array([0x50, 0x4b, 3, 4])
+    const later = new Date(now.getTime() + 60_000)
+    await repo.saveAttachment({
+      messageId: m1.id,
+      userId: me,
+      attachment: { kind: 'text', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', filename: 'c.docx', text: 'Terms' },
+      original: { data: docx, mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+      sizeBytes: 4,
+      expiresAt: later,
+    })
+    await repo.saveAttachment({ messageId: m2.id, userId: other, attachment: { kind: 'image', mimeType: 'image/jpeg', data: new Uint8Array([1]) }, sizeBytes: 1, expiresAt: later })
+    const mine = (await repo.attachmentFor(m1.id, now))!.id
+    const theirs = (await repo.attachmentFor(m2.id, now))!.id
+    expect(await repo.originalFiles(me, [mine, theirs], now)).toEqual([
+      { id: mine, kind: 'text', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', data: docx, filename: 'c.docx' },
+    ])
+    expect(await repo.originalFiles(me, [mine], new Date(later.getTime() + 1))).toEqual([])
+    // What the model sees stays the extracted text, without the original bytes.
+    expect((await repo.loadAttachments([mine])).get(mine)).toEqual({ id: mine, kind: 'text', mimeType: expect.any(String), filename: 'c.docx', text: 'Terms' })
+
+    const run = await repo.createRun({ userId: me, triggerMessageId: m1.id, model: 'm' })
+    const offer = await repo.createAction({ userId: me, runId: run, tool: 'save_file_to_drive', risk: 'low_write', status: 'awaiting_approval', input: { fileIds: [mine] }, approvalExpiresAt: later })
+    expect(await repo.actionsAwaitingConnection(me, now)).toEqual([])
+    await repo.updateAction(offer, { status: 'awaiting_approval', error: 'needs_connection', approvalExpiresAt: later })
+    expect((await repo.actionsAwaitingConnection(me, now)).map((a) => a.id)).toEqual([offer])
+    expect(await repo.actionsAwaitingConnection(other, now)).toEqual([])
+    expect(await repo.actionsAwaitingConnection(me, new Date(later.getTime() + 1))).toEqual([])
   })
 })

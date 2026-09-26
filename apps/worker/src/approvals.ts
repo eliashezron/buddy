@@ -22,7 +22,7 @@ import type { Repo, User } from '@wa/db'
  * `parseApprovalButton`, reaches `decide`.
  */
 
-export type ApprovalRepo = Pick<Repo, 'decideApproval' | 'updateAction' | 'insertOutboundMessage'>
+export type ApprovalRepo = Pick<Repo, 'decideApproval' | 'updateAction' | 'insertOutboundMessage' | 'actionsAwaitingConnection'>
 
 export interface ApprovalDeps {
   repo: ApprovalRepo
@@ -51,6 +51,33 @@ export const APPROVAL_REPLIES = {
   needsAccess: "I don't have permission for that any more, so nothing was sent. I've sent you a link to reconnect; then ask me again.",
 } as const
 
+/**
+ * Offers: `low_write` actions the system suggests with a button (e.g. "Save to Drive").
+ * Nothing goes to anyone else, so the wording is about doing, not sending.
+ */
+export const OFFER_REPLIES = {
+  working: 'On it…',
+  cancelled: "OK, I've left it.",
+  expired: "That button has expired, so I didn't do anything. Ask me again if you still want it.",
+  alreadyDone: 'That was already done.',
+  failed: "Sorry, I couldn't do that.",
+  uncertain: 'Sorry, something went wrong part-way. Please check before trying again.',
+  needsAccess: "I need access to your Google Drive first. Connect with the link below, and I'll finish as soon as you're done.",
+} as const
+
+/** How long an offer waits for the user to connect the account it needs. */
+const CONNECT_WAIT_MS = 15 * 60_000
+
+/** Links in a tool's result (`link`, or `saved[].link`), shown in the done message. */
+function linksIn(output: unknown): string[] {
+  if (!output || typeof output !== 'object') return []
+  const o = output as { link?: unknown; saved?: { name?: unknown; link?: unknown }[] }
+  if (Array.isArray(o.saved) && o.saved.length > 1) {
+    return o.saved.flatMap((f) => (typeof f.link === 'string' ? [`• ${typeof f.name === 'string' ? `${f.name}: ` : ''}${f.link}`] : []))
+  }
+  return typeof o.link === 'string' ? [o.link] : []
+}
+
 const title = (tool: AnyTool | undefined, input: unknown, fallback: string) => tool?.title?.(input) ?? fallback
 
 export function createApprovals(deps: ApprovalDeps) {
@@ -70,7 +97,13 @@ export function createApprovals(deps: ApprovalDeps) {
       const text = p.card ?? { preview: tool.preview(p.input), title: title(tool, p.input, tool.name) }
       // From a voice note: show what was heard, so a mis-heard name or amount is caught (PRD F2).
       const heard = opts.spokenText ? `🎙️ _You said: "${opts.spokenText.length > 300 ? `${opts.spokenText.slice(0, 299)}…` : opts.spokenText}"_\n\n` : ''
-      const card = { actionId: p.actionId, ...text, preview: heard + text.preview, approveLabel: tool.approveLabel ?? 'Send' }
+      const card = {
+        actionId: p.actionId,
+        ...text,
+        preview: heard + text.preview,
+        approveLabel: tool.approveLabel ?? 'Send',
+        ...(tool.risk === 'low_write' ? { cancelLabel: 'Not now' } : {}),
+      }
       try {
         const ids = await deps.channelFor(user).sendApproval(user.externalId, card)
         const sentAt = deps.now()
@@ -96,6 +129,23 @@ export function createApprovals(deps: ApprovalDeps) {
     const channel = deps.channelFor(user)
     log.info({ actionId: button.actionId, decision: button.decision, outcome: outcome.kind }, 'approval button')
 
+    if (outcome.kind !== 'not_found' && outcome.action.risk === 'low_write') {
+      switch (outcome.kind) {
+        case 'expired':
+          await channel.closeApproval(pressed, 'Expired')
+          return deps.reply(user, OFFER_REPLIES.expired)
+        case 'already_decided':
+          await channel.closeApproval(pressed, 'Already handled')
+          return deps.reply(user, outcome.action.status === 'succeeded' ? OFFER_REPLIES.alreadyDone : APPROVAL_REPLIES.noLongerPending)
+        case 'cancelled':
+          await channel.closeApproval(pressed, 'OK')
+          return deps.reply(user, OFFER_REPLIES.cancelled)
+        case 'approved':
+          await channel.closeApproval(pressed, OFFER_REPLIES.working)
+          return execute(user, outcome.action, log)
+      }
+    }
+
     switch (outcome.kind) {
       case 'not_found':
         await channel.closeApproval(pressed, 'No longer available')
@@ -117,7 +167,12 @@ export function createApprovals(deps: ApprovalDeps) {
     }
   }
 
-  async function execute(user: User, action: { id: string; tool: string; runId: string | null; input: unknown; card?: unknown }, log: Logger) {
+  async function execute(
+    user: User,
+    action: { id: string; tool: string; risk: string; runId: string | null; input: unknown; card?: unknown },
+    log: Logger,
+  ) {
+    const offer = action.risk === 'low_write'
     const tool = deps.toolsByName.get(action.tool)
     // Defence in depth: the stored input was validated when the model proposed it; check again.
     const parsed = tool?.input.safeParse(action.input)
@@ -137,12 +192,29 @@ export function createApprovals(deps: ApprovalDeps) {
         services: deps.servicesFor(user),
       })
       const failed = typeof output === 'object' && output !== null && 'ok' in output && output.ok === false
-      await repo.updateAction(action.id, { status: failed ? 'failed' : 'succeeded', result: output })
-      if (failed) return deps.reply(user, APPROVAL_REPLIES.failed)
+      const undoable = offer && !failed && Boolean(tool.undo)
+      await repo.updateAction(action.id, {
+        status: failed ? 'failed' : 'succeeded',
+        result: output,
+        ...(undoable ? { undoExpiresAt: new Date(deps.now().getTime() + 10 * 60_000) } : {}),
+      })
+      if (failed) {
+        if (!offer) return deps.reply(user, APPROVAL_REPLIES.failed)
+        const why = (output as { error?: unknown }).error
+        return deps.reply(user, `${OFFER_REPLIES.failed}${typeof why === 'string' ? ` ${why}` : ' Please try again in a moment.'}`)
+      }
       // The title the user approved (the stored card), else the tool's own.
       const approved = (action.card as { title?: string } | null | undefined)?.title
-      return deps.reply(user, `✅ Done: ${approved ?? title(tool, parsed.data, tool.name)}.`)
+      const links = linksIn(output)
+      const done = offer ? `✅ ${approved ?? title(tool, parsed.data, tool.name)}.` : `✅ Done: ${approved ?? title(tool, parsed.data, tool.name)}.`
+      return deps.reply(user, [done, ...links, ...(undoable ? ['Say "undo" within 10 minutes to reverse it.'] : [])].join('\n'))
     } catch (err) {
+      if (err instanceof NeedsConnectionError && offer) {
+        // Waits for the connection, then finishes by itself (resumeAfterConnection).
+        await repo.updateAction(action.id, { status: 'awaiting_approval', error: 'needs_connection', approvalExpiresAt: new Date(deps.now().getTime() + CONNECT_WAIT_MS) })
+        await deps.reply(user, OFFER_REPLIES.needsAccess)
+        return deps.sendConnectLink(user, err.capabilities)
+      }
       if (err instanceof NeedsConnectionError) {
         await repo.updateAction(action.id, { status: 'failed', error: `needs_connection:${err.problem}` })
         await deps.reply(user, APPROVAL_REPLIES.needsAccess)
@@ -151,9 +223,22 @@ export function createApprovals(deps: ApprovalDeps) {
       // Not retried: the row has left `awaiting_approval`, so a retry could only double-send.
       await repo.updateAction(action.id, { status: 'failed', error: err instanceof Error ? err.message : String(err) })
       logger.warn({ err, actionId: action.id, tool: tool.name }, 'approved action failed')
-      return deps.reply(user, APPROVAL_REPLIES.uncertain)
+      return deps.reply(user, offer ? OFFER_REPLIES.uncertain : APPROVAL_REPLIES.uncertain)
     }
   }
 
-  return { sendCards, decide }
+  /**
+   * The user just connected an account: finish offers they accepted that were waiting for
+   * it. Claimed with the same single conditional update as a button press.
+   */
+  async function resumeAfterConnection(user: User, log: Logger) {
+    for (const action of await repo.actionsAwaitingConnection(user.id, deps.now())) {
+      const outcome = await repo.decideApproval({ actionId: action.id, userId: user.id, decision: 'approve', now: deps.now() })
+      if (outcome.kind !== 'approved') continue
+      log.info({ actionId: action.id, tool: action.tool }, 'resuming accepted offer after connection')
+      await execute(user, outcome.action, log)
+    }
+  }
+
+  return { sendCards, decide, resumeAfterConnection }
 }

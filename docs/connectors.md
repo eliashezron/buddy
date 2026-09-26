@@ -41,6 +41,7 @@ Later: "book focus time Friday 2pm"
 | `gmail_create_draft` | low_write, undoable 10 min | Gmail compose (`gmail.compose`). Saves a draft (new or a threaded reply); never sends. Undo deletes the draft. |
 | `drive_search`, `drive_read` | read | Drive read (`drive.readonly`). Finds files by name or content; reads Docs and Slides as text and Sheets as rows (5 tabs × 200 rows). Content is marked untrusted. |
 | `create_document` | low_write, undoable 10 min | Drive file (`drive.file`). Markdown uploaded as HTML; Drive converts it to a formatted Doc. Private: never shared. Undo moves it to the trash. |
+| `save_file_to_drive` | low_write, undoable 10 min | Drive file (`drive.file`). Uploads photos and documents the user sent, as sent (the .docx, the HEIC), via a resumable upload. Private. Also offered as a **Save to Drive** button after a file (`docs/files.md`). Undo moves them to the trash. |
 | `create_spreadsheet` | low_write, undoable 10 min | Drive file. Tabs, bold frozen header, real numbers and formulas. Formulas that fetch from the web (IMPORTXML, IMAGE, …) are stored as text so a sheet built from untrusted content can't leak its data. Leading-zero numbers (phone numbers) stay text. |
 | `create_presentation` | low_write, undoable 10 min | Drive file. Title slide plus title-and-bullets slides; a half-built deck is trashed if filling it fails. |
 | `send_calendar_invite` | **outbound**, needs approval | calendar write. An event with guests (optional Meet link); Google emails the invitations. |

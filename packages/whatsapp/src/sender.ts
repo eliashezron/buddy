@@ -55,7 +55,7 @@ export function createWhatsAppChannel({
       await assertWindowOpen(to)
       const buttons = [
         { id: approvalButtonId('approve', card.actionId), title: card.approveLabel.slice(0, BUTTON_TITLE_MAX) },
-        { id: approvalButtonId('cancel', card.actionId), title: 'Cancel' },
+        { id: approvalButtonId('cancel', card.actionId), title: (card.cancelLabel ?? 'Cancel').slice(0, BUTTON_TITLE_MAX) },
       ]
       const body = toWhatsAppText(card.preview)
       if (body.length <= BUTTON_BODY_MAX) return [(await client.sendButtons(to, body, buttons)).messageId]

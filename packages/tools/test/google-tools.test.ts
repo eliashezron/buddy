@@ -612,3 +612,59 @@ describe('gmail', () => {
     expect(extractEmailText({ mimeType: 'text/plain', body: { data: b64('plain wins') } })).toBe('plain wins')
   })
 })
+
+describe('save_file_to_drive', () => {
+  const photo = { id: '11111111-1111-4111-8111-111111111111', kind: 'image' as const, mimeType: 'image/jpeg', data: new Uint8Array([0xff, 0xd8, 1]) }
+  const docx = { id: '22222222-2222-4222-8222-222222222222', kind: 'text' as const, mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', filename: 'Contract.docx', data: new Uint8Array([0x50, 0x4b]) }
+  function withFiles(files: (typeof photo | typeof docx)[]): ToolContext {
+    const base = ctx()
+    return { ...base, services: { ...base.services, files: { originals: async (ids) => files.filter((f) => ids.includes(f.id)) } } }
+  }
+  /** Drive's resumable upload: POST metadata → Location; PUT bytes → the file. */
+  function stubUpload() {
+    const calls: { url: string; init: RequestInit }[] = []
+    let n = 0
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+      calls.push({ url, init })
+      if (init.method === 'POST') return new Response(null, { status: 200, headers: { location: `https://upload.example/session${++n}` } })
+      if (init.method === 'PUT') return new Response(JSON.stringify({ id: `f${n}`, name: 'x', webViewLink: `https://drive.google.com/file/d/f${n}/view` }), { status: 200 })
+      return new Response(JSON.stringify({}), { status: 200 }) // undo: PATCH trashed
+    })
+    return calls
+  }
+
+  it('uploads each file as sent, private, named by the user or by date; undo trashes them', async () => {
+    const calls = stubUpload()
+    const { saveFileToDrive } = await import('../src/index.js')
+    const out = await saveFileToDrive.execute({ fileIds: [photo.id, docx.id] }, withFiles([photo, docx]))
+    expect(out).toMatchObject({ ok: true, sharedWithAnyone: false, saved: [{ fileId: 'f1' }, { fileId: 'f2' }] })
+    const [start1, put1, start2, put2] = calls
+    expect(start1!.url).toContain('/upload/drive/v3/files?uploadType=resumable')
+    // Named by date in the user's timezone (EAT, UTC+3) when the user's app gave no name.
+    expect(JSON.parse(String(start1!.init.body))).toEqual({ name: 'Photo 2026-09-24 12.00.jpg', mimeType: 'image/jpeg' })
+    expect((start1!.init.headers as Record<string, string>)['X-Upload-Content-Length']).toBe('3')
+    expect(put1).toMatchObject({ url: 'https://upload.example/session1', init: { method: 'PUT', body: photo.data } })
+    expect(JSON.parse(String(start2!.init.body))).toEqual({ name: 'Contract.docx', mimeType: docx.mimeType })
+    expect(put2!.init.body).toBe(docx.data)
+    expect(JSON.stringify(calls.map((c) => c.init.body))).not.toContain('permissions')
+
+    await saveFileToDrive.undo!(out, withFiles([]))
+    expect(calls.slice(4).map((c) => [c.init.method, c.url])).toEqual([
+      ['PATCH', 'https://www.googleapis.com/drive/v3/files/f1'],
+      ['PATCH', 'https://www.googleapis.com/drive/v3/files/f2'],
+    ])
+  })
+
+  it('says so when the files are gone, and asks for Drive access when not connected', async () => {
+    const { saveFileToDrive } = await import('../src/index.js')
+    expect(await saveFileToDrive.execute({ fileIds: [photo.id] }, withFiles([]))).toMatchObject({ ok: false, error: expect.stringContaining('3 hours') })
+    const offline = { ...ctx(false), services: { ...ctx(false).services, files: { originals: async () => [photo] } } }
+    await expect(saveFileToDrive.execute({ fileIds: [photo.id] }, offline)).rejects.toBeInstanceOf(NeedsConnectionError)
+  })
+
+  it('reports Drive refusing the upload', async () => {
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ error: { message: 'The user has exceeded their Drive storage quota' } }), { status: 403 }))
+    const { saveFileToDrive } = await import('../src/index.js')
+    await expect(saveFileToDrive.execute({ fileIds: [photo.id] }, withFiles([photo]))).rejects.toThrow(/storage quota/)
+  })
+})

@@ -78,6 +78,13 @@
       "when": 1790437813277,
       "tag": "0010_petite_meltdown",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1790440589992,
+      "tag": "0011_solid_doctor_spectrum",
+      "breakpoints": true
     }
   ]
 }

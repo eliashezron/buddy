@@ -97,6 +97,9 @@ export const attachments = pgTable(
     data: bytea('data'),
     /** text: what we extracted. */
     text: text('text'),
+    /** The file as the user sent it, when the model sees something else (extracted text, HEIC → JPEG). For saving to Drive. */
+    original: bytea('original'),
+    originalMimeType: text('original_mime_type'),
     truncated: boolean('truncated').notNull().default(false),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     createdAt: createdAt(),
