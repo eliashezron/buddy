@@ -612,7 +612,9 @@ describe('inbound handler: approvals (outbound actions)', () => {
   it('an approval after 15 minutes expires instead of sending', async () => {
     let clock = Date.now()
     const { t, executed, action } = await requestSend({ now: () => new Date(clock) })
-    clock += 15 * 60_000 + 1
+    // Step just past the stored expiry: the agent stamps it from the real clock during the run,
+    // which can be well over a millisecond after `clock` was read.
+    clock = action.approvalExpiresAt!.getTime() + 1
     await t.handle(press(`approve:${action.id}`))
     expect(executed).toEqual([])
     expect(action.status).toBe('expired')

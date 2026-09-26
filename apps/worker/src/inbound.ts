@@ -112,6 +112,9 @@ export function connectLinkMessage(capabilities: Capability[], url: string): { t
   return { text: `${historyText}\n\nOr open this link:\n${url}`, historyText, label: 'Connect Google' }
 }
 
+/** The token counts agent_runs stores. Cache reads and writes are logged with the run. */
+const storedUsage = (u: { inputTokens: number; outputTokens: number }) => ({ inputTokens: u.inputTokens, outputTokens: u.outputTokens })
+
 /** What we store as the body. Content only; never logged. */
 function bodyOf(m: InboundMessage): string | null {
   // Empty strings (e.g. a bare /start) are stored as null so they never become history.
@@ -283,10 +286,10 @@ export function createInboundHandler(deps: InboundDeps) {
       const pending = result.toolCalls.filter((t) => t.outcome === 'awaiting_approval' && t.actionId)
       await approvals.sendCards(user, pending.map((t) => ({ actionId: t.actionId!, tool: t.name, input: t.input, card: t.card })), log)
     } catch (err) {
-      await repo.finishRun(runId, { ...result.usage, status: 'failed', error: 'reply send failed' })
+      await repo.finishRun(runId, { ...storedUsage(result.usage), status: 'failed', error: 'reply send failed' })
       throw err
     }
-    await repo.finishRun(runId, { ...result.usage, status: result.status })
+    await repo.finishRun(runId, { ...storedUsage(result.usage), status: result.status })
   }
 
   async function handleMessage(m: InboundMessage, job: JobInfo) {

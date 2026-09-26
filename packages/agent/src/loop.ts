@@ -83,7 +83,11 @@ export interface RunAgentResult {
   connectionRequests: Capability[]
   /** `awaiting_approval` action ids: the caller sends an approval card for each. */
   approvalRequests: string[]
-  usage: { inputTokens: number; outputTokens: number }
+  /**
+   * `inputTokens` is uncached input only. Cache reads cost ~0.1× and writes ~1.25× the
+   * input price, so they are counted separately.
+   */
+  usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
 }
 
 const MAX_TOKENS = 16_000
@@ -179,7 +183,7 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
   const maxTurns = input.maxTurns ?? 8
   const byName = new Map(tools.map((t) => [t.name, t]))
   const toolParams = tools.map(toolParam)
-  const usage = { inputTokens: 0, outputTokens: 0 }
+  const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
   const toolCalls: ToolCallRecord[] = []
   const connectionRequests = new Set<Capability>()
   const approvalRequests: string[] = []
@@ -348,11 +352,17 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
         // Re-run policy declines on Anthropic's recommended fallback model.
         betas: [FALLBACK_BETA],
         fallbacks: 'default',
+        // Automatic caching of the growing conversation: each call in this tool loop reads
+        // the previous call's prefix. The system prompt carries a second, explicit
+        // breakpoint for tools + instructions, shared by every request.
+        cache_control: { type: 'ephemeral' },
       },
       input.signal ? { signal: input.signal } : undefined,
     )
     usage.inputTokens += response.usage.input_tokens
     usage.outputTokens += response.usage.output_tokens
+    usage.cacheReadTokens += response.usage.cache_read_input_tokens ?? 0
+    usage.cacheWriteTokens += response.usage.cache_creation_input_tokens ?? 0
 
     if (response.stop_reason === 'refusal') {
       return done('refused', REFUSAL_REPLY)
