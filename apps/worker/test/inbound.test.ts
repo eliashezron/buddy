@@ -5,10 +5,10 @@ import Anthropic from '@anthropic-ai/sdk'
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { FAILURE_REPLY, type CreateMessage } from '@wa/agent'
-import { createLogger, defineTool, NeedsConnectionError, type Capability, type ChannelEvent, type ChannelName, type ConnectionEvent } from '@wa/core'
+import { createLogger, defineTool, NeedsConnectionError, type Capability, type ChannelEvent, type ChannelName, type ConnectionEvent, type SpeechToText } from '@wa/core'
 import { createTelegramChannel, FakeTelegramClient, parseTelegramUpdate, TelegramApiError } from '@wa/telegram'
 import { createWhatsAppChannel, FakeWhatsAppClient, parseWebhook } from '@wa/whatsapp'
-import { createInboundHandler, UNSUPPORTED_REPLIES, welcomeText, type Connectors, type InboundRepo } from '../src/inbound.js'
+import { createInboundHandler, UNSUPPORTED_REPLIES, VOICE_REPLIES, welcomeText, type Connectors, type InboundRepo } from '../src/inbound.js'
 
 const logger = createLogger({ name: 'test', level: 'silent' })
 
@@ -97,6 +97,10 @@ function memoryRepo() {
       const m = messages.find((x) => x.id === id)
       return m ? ({ ...m, type: 'text', status: m.status ?? null, errorCodes: null, sentAt: new Date(), createdAt: new Date() } as never) : null
     },
+    async setMessageBody(id, body) {
+      const m = messages.find((x) => x.id === id)
+      if (m) m.body = body
+    },
     // Same semantics as the Postgres version: one conditional update, then explain a miss.
     async decideApproval({ actionId, userId, decision, now }) {
       const a = actions.find((x) => x.id === actionId && x.userId === userId)
@@ -136,7 +140,7 @@ const reply = (text: string) =>
 
 function setup(
   createMessage: CreateMessage,
-  opts: { connectors?: Connectors; tools?: ReturnType<typeof defineTool>[]; now?: () => Date; credentials?: Connectors['forUser'] } = {},
+  opts: { connectors?: Connectors; tools?: ReturnType<typeof defineTool>[]; now?: () => Date; credentials?: Connectors['forUser']; speech?: SpeechToText } = {},
 ) {
   const mem = memoryRepo()
   const wa = new FakeWhatsAppClient()
@@ -165,6 +169,7 @@ function setup(
     defaultTimezone: 'Africa/Kampala',
     ...(opts.connectors ? { connectors: opts.connectors } : {}),
     ...(opts.now ? { now: opts.now } : {}),
+    ...(opts.speech ? { speech: opts.speech } : {}),
   })
   return { ...mem, wa, tg, handle }
 }
@@ -707,3 +712,101 @@ describe('inbound handler: approvals (outbound actions)', () => {
     expect(action.status).toBe('succeeded')
   })
 })
+
+describe('inbound handler: voice notes (PRD F2)', () => {
+  const toolUse = (name: string, input: unknown) =>
+    ({
+      id: 'm',
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-opus-5',
+      content: [{ type: 'tool_use', id: 't1', name, input }],
+      stop_reason: 'tool_use',
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }) as unknown as Anthropic.Beta.Messages.BetaMessage
+
+  function fakeSpeech(text: string | Error) {
+    const heard: { bytes: number; mimeType: string }[] = []
+    const speech: SpeechToText = {
+      async transcribe(audio) {
+        heard.push({ bytes: audio.data.length, mimeType: audio.mimeType })
+        if (text instanceof Error) throw text
+        return { text, language: 'eng', languageProbability: 0.97 }
+      },
+    }
+    return { speech, heard }
+  }
+
+  it('transcribes a voice note, runs the agent on the transcript and stores it as the message', async () => {
+    const { speech, heard } = fakeSpeech('What is the dollar rate today?')
+    const prompts: string[] = []
+    const t = setup(async (params) => {
+      const last = params.messages.at(-1)!
+      prompts.push(typeof last.content === 'string' ? last.content : JSON.stringify(last.content))
+      return reply('About 3,900 UGX.')
+    }, { speech })
+    t.tg.files.set('TG_FILE_ID_PLACEHOLDER', new Uint8Array(24))
+    for (const e of fixtureEvents('telegram-voice')) await t.handle(e)
+    expect(heard).toEqual([{ bytes: 24, mimeType: 'audio/ogg' }])
+    expect(prompts).toEqual(['What is the dollar rate today?'])
+    expect(t.tg.sent.at(-1)!.text).toBe('About 3,900 UGX.')
+    const stored = t.messages.find((m) => m.direction === 'inbound')!
+    expect(stored.body).toBe('What is the dollar rate today?')
+  })
+
+  it('shows what was heard on approval cards, so a mis-heard name or amount is caught', async () => {
+    const { speech } = fakeSpeech('Email kato at example dot com that I am running late')
+    const send = defineTool({
+      name: 'gmail_send_email',
+      description: 'send',
+      risk: 'outbound',
+      input: z.object({ to: z.string() }),
+      preview: ({ to }) => `Send this email to ${to}?`,
+      execute: async () => ({ ok: true }),
+    })
+    const script = [toolUse('gmail_send_email', { to: 'kato@example.com' }), reply('Ready for you to check.')]
+    const t = setup(async () => script.shift()!, { speech, tools: [send] })
+    t.tg.files.set('TG_FILE_ID_PLACEHOLDER', new Uint8Array(24))
+    for (const e of fixtureEvents('telegram-voice')) await t.handle(e)
+    const card = t.tg.sent.find((m) => m.buttons)!
+    expect(card.text).toContain('🎙️ <i>You said: "Email kato at example dot com that I am running late"</i>')
+    expect(card.text).toContain('Send this email to kato@example.com?')
+  })
+
+  it('refuses notes over 5 minutes without downloading, and says so for silent or failed ones', async () => {
+    const { speech, heard } = fakeSpeech('')
+    const t = setup(async () => reply('never'), { speech })
+    const [long] = fixtureEvents('telegram-voice')
+    if (long?.kind === 'message') long.message.media!.durationSec = 301
+    await t.handle(long!)
+    expect(t.tg.sent.at(-1)!.text).toBe(VOICE_REPLIES.tooLong)
+    expect(heard).toEqual([])
+
+    t.tg.files.set('TG_FILE_ID_PLACEHOLDER', new Uint8Array(24))
+    const [silent] = fixtureEvents('telegram-voice')
+    if (silent?.kind === 'message') silent.message.id = '1:555000111:900'
+    await t.handle(silent!)
+    expect(t.tg.sent.at(-1)!.text).toBe(VOICE_REPLIES.unclear)
+    expect([...t.runs.values()].every((r) => r.status !== 'running')).toBe(true)
+  })
+
+  it('lets the queue retry a transient transcription failure, and apologises on the last attempt', async () => {
+    const err = Object.assign(new Error('transcription failed: overloaded'), { transient: true })
+    const { speech } = fakeSpeech(err)
+    const t = setup(async () => reply('never'), { speech })
+    t.tg.files.set('TG_FILE_ID_PLACEHOLDER', new Uint8Array(24))
+    const [e] = fixtureEvents('telegram-voice')
+    await expect(t.handle(e!, { finalAttempt: false })).rejects.toThrow(/overloaded/)
+    const [again] = fixtureEvents('telegram-voice')
+    if (again?.kind === 'message') again.message.id = '1:555000111:901'
+    await t.handle(again!, { finalAttempt: true })
+    expect(t.tg.sent.at(-1)!.text).toBe(VOICE_REPLIES.failed)
+  })
+
+  it('without a speech provider, voice notes still get the not-yet reply', async () => {
+    const t = setup(async () => reply('never'))
+    for (const e of fixtureEvents('telegram-voice')) await t.handle(e)
+    expect(t.tg.sent.at(-1)!.text).toBe(UNSUPPORTED_REPLIES.audio)
+  })
+})
+

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createLogger } from '@wa/core'
-import { CloudApiClient, GraphApiError } from '../src/client.js'
+import { CloudApiClient, GraphApiError, MediaSizeError } from '../src/client.js'
 
 const logger = createLogger({ name: 'test', level: 'silent' })
 
@@ -47,6 +47,22 @@ describe('CloudApiClient', () => {
       type: 'interactive',
       interactive: { type: 'cta_url', body: { text: 'Connect Google' }, action: { name: 'cta_url', parameters: { display_text: 'Connect Google', url: 'https://x/start?s=T' } } },
     })
+  })
+
+  it('downloads media in two steps with the bearer token, refusing oversized media before downloading', async () => {
+    const calls: { url: string; auth: string | undefined }[] = []
+    const impl = (async (url: string, init: RequestInit) => {
+      calls.push({ url, auth: (init.headers as Record<string, string>).Authorization })
+      if (url.includes('/v23.0/MEDIA1')) return new Response(JSON.stringify({ url: 'https://lookaside.fbsbx.com/whatsapp/abc', mime_type: 'audio/ogg; codecs=opus', file_size: 3 }))
+      if (url.includes('/v23.0/BIG')) return new Response(JSON.stringify({ url: 'https://lookaside.fbsbx.com/whatsapp/big', file_size: 99_999_999 }))
+      return new Response(new Uint8Array([4, 5, 6]))
+    }) as unknown as typeof fetch
+    const client = new CloudApiClient({ ...base, fetch: impl })
+    expect(await client.downloadMedia('MEDIA1', { maxBytes: 100 })).toEqual({ data: new Uint8Array([4, 5, 6]), mimeType: 'audio/ogg; codecs=opus' })
+    expect(calls.map((c) => c.url)).toEqual(['https://graph.facebook.com/v23.0/MEDIA1', 'https://lookaside.fbsbx.com/whatsapp/abc'])
+    expect(calls.every((c) => c.auth === 'Bearer tok')).toBe(true)
+    await expect(client.downloadMedia('BIG', { maxBytes: 100 })).rejects.toBeInstanceOf(MediaSizeError)
+    expect(calls.some((c) => c.url.endsWith('/big'))).toBe(false)
   })
 
   it('retries 5xx and 429, then succeeds', async () => {

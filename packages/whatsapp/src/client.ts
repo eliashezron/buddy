@@ -13,7 +13,19 @@ export interface WhatsAppClient {
   sendButtons(to: string, body: string, buttons: { id: string; title: string }[]): Promise<{ messageId: string }>
   /** Call-to-action URL button: body ≤ 1024 chars, label ≤ 20 chars. */
   sendUrlButton(to: string, body: string, label: string, url: string): Promise<{ messageId: string }>
+  /**
+   * Inbound media by id: Graph returns a short-lived URL (about 5 minutes), which is then
+   * downloaded with the same bearer token. Refuses anything over `maxBytes` before downloading.
+   */
+  downloadMedia(mediaId: string, opts: { maxBytes: number }): Promise<{ data: Uint8Array; mimeType: string }>
 }
+
+/** Graph reported media larger than the caller allows. */
+export class MediaSizeError extends Error {
+  override name = 'MediaSizeError'
+}
+
+const mediaInfoSchema = z.object({ url: z.string(), mime_type: z.string().optional(), file_size: z.number().optional() })
 
 export const BUTTON_BODY_MAX = 1024
 export const BUTTON_TITLE_MAX = 20
@@ -108,6 +120,23 @@ export class CloudApiClient implements WhatsAppClient {
     await this.post('/messages', payload)
   }
 
+  async downloadMedia(mediaId: string, opts: { maxBytes: number }) {
+    const headers = { Authorization: `Bearer ${this.opts.accessToken}` }
+    const infoRes = await this.fetchImpl(`https://graph.facebook.com/${this.opts.graphApiVersion}/${encodeURIComponent(mediaId)}`, {
+      headers,
+      signal: AbortSignal.timeout(this.opts.timeoutMs ?? 10_000),
+    })
+    const infoJson: unknown = await infoRes.json().catch(() => undefined)
+    if (!infoRes.ok) throw new GraphApiError(infoRes.status, undefined, `media lookup failed (HTTP ${infoRes.status})`)
+    const info = mediaInfoSchema.parse(infoJson)
+    if ((info.file_size ?? 0) > opts.maxBytes) throw new MediaSizeError(`media is ${info.file_size} bytes`)
+    const res = await this.fetchImpl(info.url, { headers, signal: AbortSignal.timeout(60_000) })
+    if (!res.ok) throw new GraphApiError(res.status, undefined, `media download failed (HTTP ${res.status})`)
+    const data = new Uint8Array(await res.arrayBuffer())
+    if (data.length > opts.maxBytes) throw new MediaSizeError(`media is ${data.length} bytes`)
+    return { data, mimeType: info.mime_type ?? 'audio/ogg' }
+  }
+
   private async post(path: string, payload: unknown): Promise<unknown> {
     const maxAttempts = this.opts.maxAttempts ?? 3
     for (let attempt = 1; ; attempt++) {
@@ -146,6 +175,7 @@ export type RecordedCall =
   | { method: 'markRead'; messageId: string; typing: boolean }
   | { method: 'sendButtons'; to: string; body: string; buttons: { id: string; title: string }[] }
   | { method: 'sendUrlButton'; to: string; body: string; label: string; url: string }
+  | { method: 'downloadMedia'; mediaId: string }
 
 /** Records every outbound call. Use this in all tests and in `pnpm replay`; nothing hits Graph. */
 export class FakeWhatsAppClient implements WhatsAppClient {
@@ -171,6 +201,17 @@ export class FakeWhatsAppClient implements WhatsAppClient {
   async sendUrlButton(to: string, body: string, label: string, url: string) {
     this.calls.push({ method: 'sendUrlButton', to, body, label, url })
     return { messageId: `wamid.FAKE_${++this.seq}` }
+  }
+
+  /** Media tests can "download", by media id. */
+  readonly media = new Map<string, { data: Uint8Array; mimeType: string }>()
+
+  async downloadMedia(mediaId: string, opts: { maxBytes: number }) {
+    this.calls.push({ method: 'downloadMedia', mediaId })
+    const m = this.media.get(mediaId)
+    if (!m) throw new GraphApiError(404, undefined, 'media not found')
+    if (m.data.length > opts.maxBytes) throw new MediaSizeError(`media is ${m.data.length} bytes`)
+    return m
   }
 
   get sent() {

@@ -19,6 +19,9 @@ const fileSchema = z.looseObject({
   file_id: z.string(),
   mime_type: z.string().optional(),
   file_name: z.string().optional(),
+  file_size: z.number().optional(),
+  /** Voice, audio and video: length in seconds. */
+  duration: z.number().optional(),
 })
 
 export const telegramMessageSchema = z.looseObject({

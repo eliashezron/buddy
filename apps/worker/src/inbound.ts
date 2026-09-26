@@ -3,6 +3,7 @@ import {
   CAPABILITIES,
   ChannelSendError,
   noServices,
+  MediaTooLargeError,
   parseApprovalButton,
   type AnyTool,
   type Capability,
@@ -14,6 +15,7 @@ import {
   type InboundMessage,
   type Logger,
   type QueueEvent,
+  type SpeechToText,
   type StatusUpdate,
   type ToolServices,
   type UndoService,
@@ -38,6 +40,7 @@ export type InboundRepo = Pick<
   | 'getMessageById'
   | 'latestUndoableActions'
   | 'decideApproval'
+  | 'setMessageBody'
 >
 
 /** Google (or other) connectors for one user. Absent when no connector is configured. */
@@ -57,10 +60,22 @@ export interface InboundDeps {
   logger: Logger
   defaultTimezone: string
   connectors?: Connectors
+  /** Voice notes (PRD F2). Without it, voice notes get the "not yet" reply. */
+  speech?: SpeechToText
   historyLimit?: number
   historyWindowMs?: number
   now?: () => Date
 }
+
+/** PRD F2: voice notes up to 5 minutes. WhatsApp reports no duration, so size is capped too. */
+export const MAX_VOICE_SECONDS = 5 * 60
+export const MAX_VOICE_BYTES = 16 * 1024 * 1024
+
+export const VOICE_REPLIES = {
+  tooLong: 'That voice note is over 5 minutes, which is more than I can take. Could you split it up, or type the main points?',
+  unclear: "I couldn't make out that voice note. Could you try again somewhere quieter, or type it?",
+  failed: 'Sorry, I had trouble with that voice note. Please try again in a moment, or type it.',
+} as const
 
 export interface JobInfo {
   /** True when BullMQ will not retry this job again. */
@@ -225,6 +240,8 @@ export function createInboundHandler(deps: InboundDeps) {
     text: string
     forwarded?: boolean
     typingFor?: InboundMessage
+    /** Set when the text came from a voice note: shown on approval cards so a mis-heard word is caught. */
+    spoken?: boolean
     log: Logger
     job: JobInfo
   }) {
@@ -284,7 +301,12 @@ export function createInboundHandler(deps: InboundDeps) {
       await reply(user, result.reply)
       if (result.connectionRequests.length) await sendConnectLink(user, result.connectionRequests, opts.triggerMessageId)
       const pending = result.toolCalls.filter((t) => t.outcome === 'awaiting_approval' && t.actionId)
-      await approvals.sendCards(user, pending.map((t) => ({ actionId: t.actionId!, tool: t.name, input: t.input, card: t.card })), log)
+      await approvals.sendCards(
+        user,
+        pending.map((t) => ({ actionId: t.actionId!, tool: t.name, input: t.input, card: t.card })),
+        log,
+        opts.spoken ? { spokenText: opts.text } : {},
+      )
     } catch (err) {
       await repo.finishRun(runId, { ...storedUsage(result.usage), status: 'failed', error: 'reply send failed' })
       throw err
@@ -333,6 +355,11 @@ export function createInboundHandler(deps: InboundDeps) {
         return
       }
       text = m.text
+    } else if (m.type === 'audio' && m.media && deps.speech) {
+      const heard = await transcribe(user, m, stored.id, log, job)
+      if (!heard) return
+      await runAndReply({ user, triggerMessageId: stored.id, text: heard, forwarded: m.forwarded ?? false, typingFor: m, spoken: true, log, job })
+      return
     } else if (m.type !== 'text') {
       text = undefined
     }
@@ -343,6 +370,42 @@ export function createInboundHandler(deps: InboundDeps) {
     }
 
     await runAndReply({ user, triggerMessageId: stored.id, text, forwarded: m.forwarded ?? false, typingFor: m, log, job })
+  }
+
+  /**
+   * Voice note → text. Returns the transcript, or null after telling the user why not.
+   * The transcript is stored as the message body (it is content: never logged).
+   */
+  async function transcribe(user: User, m: InboundMessage, messageId: string, log: Logger, job: JobInfo): Promise<string | null> {
+    if ((m.media?.durationSec ?? 0) > MAX_VOICE_SECONDS) {
+      await reply(user, VOICE_REPLIES.tooLong)
+      return null
+    }
+    const channel = channelFor(user.channel)
+    const stopTyping = channel.startTyping(m)
+    try {
+      const audio = await channel.downloadMedia(m, { maxBytes: MAX_VOICE_BYTES })
+      const t = await deps.speech!.transcribe(audio)
+      log.info({ durationSec: m.media?.durationSec, language: t.language, chars: t.text.length }, 'voice note transcribed')
+      if (!t.text) {
+        await reply(user, VOICE_REPLIES.unclear)
+        return null
+      }
+      await repo.setMessageBody(messageId, t.text)
+      return t.text
+    } catch (err) {
+      if (err instanceof MediaTooLargeError) {
+        await reply(user, VOICE_REPLIES.tooLong)
+        return null
+      }
+      const transient = (err as { transient?: boolean }).transient === true
+      log.warn({ err: err instanceof Error ? err.message : String(err), transient }, 'voice note transcription failed')
+      if (transient && !job.finalAttempt) throw err
+      await reply(user, VOICE_REPLIES.failed)
+      return null
+    } finally {
+      stopTyping()
+    }
   }
 
   /** The user finished (or abandoned) connecting an account: confirm, then finish what they asked. */

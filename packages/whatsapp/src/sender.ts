@@ -1,5 +1,5 @@
-import { approvalButtonId, ChannelSendError, type Channel, type InboundMessage } from '@wa/core'
-import { BUTTON_BODY_MAX, BUTTON_TITLE_MAX, GraphApiError, type WhatsAppClient } from './client.js'
+import { approvalButtonId, ChannelSendError, MediaTooLargeError, type Channel, type InboundMessage } from '@wa/core'
+import { BUTTON_BODY_MAX, BUTTON_TITLE_MAX, GraphApiError, MediaSizeError, type WhatsAppClient } from './client.js'
 import { splitMessage, toWhatsAppText } from './format.js'
 
 export const SERVICE_WINDOW_MS = 24 * 60 * 60_000
@@ -77,6 +77,15 @@ export function createWhatsAppChannel({
         }
       }
       return channel.sendText(to, link.text.includes(link.url) ? link.text : `${link.text}\n${link.url}`)
+    },
+    async downloadMedia(message, { maxBytes }) {
+      if (!message.media) throw new Error('message has no media')
+      try {
+        return await client.downloadMedia(message.media.id, { maxBytes })
+      } catch (err) {
+        if (err instanceof MediaSizeError) throw new MediaTooLargeError(err.message)
+        throw err
+      }
     },
     // Reply buttons can't be removed on WhatsApp. A later tap on a decided card is a no-op.
     async closeApproval() {},

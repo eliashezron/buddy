@@ -92,6 +92,7 @@ decision the worker calls `answerCallbackQuery` (stops the spinner) and
 
 ## Not yet
 
-- Voice notes, photos and documents get the same "not yet" reply as on WhatsApp.
-  Files come from `getFile` + `https://api.telegram.org/file/bot<token>/<path>` (limit 20 MB).
+- Photos and documents get the same "not yet" reply as on WhatsApp. (Voice notes are
+  transcribed when `ELEVENLABS_API_KEY` is set: see `docs/voice.md`. Files come from
+  `getFile` + `https://api.telegram.org/file/bot<token>/<path>`, limit 20 MB.)
 - Linking one person's Telegram and WhatsApp accounts. Today they are separate users.
