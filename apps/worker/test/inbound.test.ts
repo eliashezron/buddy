@@ -30,7 +30,7 @@ function fixtureEvents(name: string, rebase = true): ChannelEvent[] {
 function memoryRepo() {
   type U = { id: string; channel: ChannelName; externalId: string; displayName: string | null; timezone: string; lastInboundAt: Date | null; replyMode: string; createdAt: Date }
   const users = new Map<string, U>()
-  const messages: { id: string; userId: string; channel: string; externalMessageId: string; direction: string; body: string | null; status?: string }[] = []
+  const messages: { id: string; userId: string; channel: string; externalMessageId: string; direction: string; body: string | null; status?: string; type?: string }[] = []
   const runs = new Map<string, { status: string; triggerMessageId: string }>()
   const actions: {
     id: string; userId: string; runId: string; tool: string; risk: string; status: string
@@ -52,7 +52,7 @@ function memoryRepo() {
       const existing = messages.find((x) => x.channel === m.channel && x.externalMessageId === m.externalMessageId)
       if (existing) return { id: existing.id, isNew: false }
       const id = `msg_${++seq}`
-      messages.push({ id, userId: m.userId, channel: m.channel, externalMessageId: m.externalMessageId, direction: 'inbound', body: m.body })
+      messages.push({ id, userId: m.userId, channel: m.channel, externalMessageId: m.externalMessageId, direction: 'inbound', body: m.body, type: m.type })
       return { id, isNew: true }
     },
     async hasCompletedRun(messageId) {
@@ -95,7 +95,7 @@ function memoryRepo() {
     },
     async getMessageById(id) {
       const m = messages.find((x) => x.id === id)
-      return m ? ({ ...m, type: 'text', status: m.status ?? null, errorCodes: null, sentAt: new Date(), createdAt: new Date() } as never) : null
+      return m ? ({ ...m, type: m.type ?? 'text', status: m.status ?? null, errorCodes: null, sentAt: new Date(), createdAt: new Date() } as never) : null
     },
     async setReplyMode(userId, mode) {
       const u = [...users.values()].find((x) => x.id === userId)
@@ -890,6 +890,36 @@ describe('voice replies (PRD F3)', () => {
     await t.handle(voiceNote())
     expect(t.tg.calls.some((c) => c.method === 'sendVoice')).toBe(false)
     expect(t.tg.sent.at(-1)!.text).toBe('Here you go.')
+  })
+
+  it('after connecting an account, a request that came as a voice note is answered by voice', async () => {
+    const { tts, spoken } = voices()
+    let connected = false
+    const calendar = defineTool({
+      name: 'calendar_list_events',
+      description: 'calendar',
+      risk: 'read',
+      input: z.object({}),
+      preview: () => '',
+      async execute() {
+        if (!connected) throw new NeedsConnectionError(['calendar.read'], 'not_connected')
+        return { ok: true, events: [] }
+      },
+    })
+    const toolCall = { id: 'm', type: 'message', role: 'assistant', model: 'x', content: [{ type: 'tool_use', id: 't1', name: 'calendar_list_events', input: {} }], stop_reason: 'tool_use', usage: { input_tokens: 1, output_tokens: 1 } } as unknown as Anthropic.Beta.Messages.BetaMessage
+    const script = [toolCall, reply('A link is coming.'), toolCall, reply('Nothing tomorrow.')]
+    const connectors: Connectors = {
+      forUser: () => ({ credentials: { accessToken: async () => 'tok' }, connections: { list: async () => [], disconnect: async () => false } }),
+      connectLink: async () => ({ url: 'https://api.example/oauth/google/start?s=T' }),
+    }
+    const t = setup(async () => script.shift()!, { speech: heardAs("What's on tomorrow?", 'eng'), tts, tools: [calendar], connectors })
+    t.tg.files.set('TG_FILE_ID_PLACEHOLDER', new Uint8Array(24))
+    await t.handle(voiceNote())
+    const user = [...t.users.values()][0]!
+    const trigger = t.messages.find((m) => m.direction === 'inbound')!
+    connected = true
+    await t.handle({ kind: 'connection', id: 'h1', outcome: 'connected', userId: user.id, triggerMessageId: trigger.id, requested: ['calendar.read'], needed: ['calendar.read'], granted: ['calendar.read'], missing: [], account: null })
+    expect(spoken.map((s) => s.text)).toEqual(['A link is coming.', 'Nothing tomorrow.'])
   })
 
   it('set_reply_mode stores the choice through the preferences service', async () => {

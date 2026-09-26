@@ -511,7 +511,8 @@ export function createInboundHandler(deps: InboundDeps) {
     const trigger = e.triggerMessageId ? await repo.getMessageById(e.triggerMessageId) : null
     if (!trigger?.body || e.missing.length) return
     log.info('resuming request after connection')
-    await runAndReply({ user, triggerMessageId: trigger.id, text: trigger.body, log, job })
+    // A request that came as a voice note is answered as one (its text is the stored transcript).
+    await runAndReply({ user, triggerMessageId: trigger.id, text: trigger.body, spoken: trigger.type === 'audio', log, job })
   }
 
   async function handleStatus(s: StatusUpdate) {
