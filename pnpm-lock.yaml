@@ -172,6 +172,9 @@ importers:
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.6
+      '@wa/agent':
+        specifier: workspace:*
+        version: link:packages/agent
       '@wa/core':
         specifier: workspace:*
         version: link:packages/core

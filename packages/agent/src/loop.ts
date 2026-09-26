@@ -12,6 +12,7 @@ import {
   type ToolServices,
 } from '@wa/core'
 import { z } from 'zod'
+import { ModelProviderError } from './openai-responses.js'
 import { buildSystemPrompt, wrapForwarded } from './prompt.js'
 
 type BetaMessage = Anthropic.Beta.Messages.BetaMessage
@@ -95,6 +96,7 @@ const FALLBACK_BETA = 'server-side-fallback-2026-07-01'
 
 /** Worth retrying later: rate limits, overload, timeouts, network. Auth and bad requests are not. */
 export function isTransientModelError(err: unknown): boolean {
+  if (err instanceof ModelProviderError) return err.transient
   if (err instanceof Anthropic.APIConnectionError) return true
   if (err instanceof Anthropic.APIError) {
     const status = err.status ?? 0

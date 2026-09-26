@@ -115,11 +115,17 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Fails on any adversarial failure or accuracy below evals/baseline.json.
+      # Fails on any adversarial failure or accuracy below the model's baseline
+      # (evals/baseline.<model>.json, else evals/baseline.json).
       # EVALS_REQUIRED: a missing key (e.g. fork PR) fails instead of skipping.
+      # Running on the development model (gpt-6-luna via OpenCode) for now, by the
+      # owner's decision (2026-09-26). To go back to Claude: drop the three
+      # OpenCode lines and set ANTHROPIC_API_KEY instead.
       - run: pnpm evals
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LLM_PROVIDER: opencode
+          AGENT_MODEL: gpt-6-luna
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           EVALS_REQUIRED: "1"
 
   gate:

@@ -4,7 +4,8 @@
  *   (default)  Print the normalised payload: `_fixture` stripped, placeholders filled from env.
  *   --run      Run the full inbound pipeline in-process: signature check → parse → worker
  *              handler → agent, with the fake WhatsApp client. Needs Postgres and
- *              ANTHROPIC_API_KEY. Prints what would have been sent. Nothing hits Graph.
+ *              ANTHROPIC_API_KEY (or OPENCODE_API_KEY with LLM_PROVIDER=opencode).
+ *              Prints what would have been sent. Nothing hits Graph.
  *   --send     POST the signed payload to a running API (default http://localhost:3000/webhook).
  *              The worker then sends real replies through the Cloud API.
  *
@@ -81,8 +82,9 @@ if (mode === 'send' && !telegram) {
 }
 
 // --run: the same path the webhook + worker take, in one process.
-const [{ default: Anthropic }, core, db, tools, wa, tg, inbound] = await Promise.all([
+const [{ default: Anthropic }, agent, core, db, tools, wa, tg, inbound] = await Promise.all([
   import('@anthropic-ai/sdk'),
+  import('@wa/agent'),
   import('@wa/core'),
   import('@wa/db'),
   import('@wa/tools'),
@@ -100,7 +102,8 @@ logger.info({ events: events.length, skipped }, 'parsed')
 
 const { db: database, close } = db.createDb(config.DATABASE_URL, { max: 2 })
 const repo = db.createRepo(database)
-const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
+const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY ?? 'unused-with-opencode' })
+const opencode = config.LLM_PROVIDER === 'opencode' ? { apiKey: config.OPENCODE_API_KEY!, baseUrl: config.OPENCODE_BASE_URL } : null
 const fake = new wa.FakeWhatsAppClient()
 const fakeTg = new tg.FakeTelegramClient()
 const handle = inbound.createInboundHandler({
@@ -109,9 +112,13 @@ const handle = inbound.createInboundHandler({
     whatsapp: wa.createWhatsAppChannel({ client: fake, getLastInboundAt: (waId) => repo.getLastInboundAt('whatsapp', waId) }),
     telegram: tg.createTelegramChannel({ client: fakeTg, botId: tgBotId }),
   },
-  createMessage: (params, opts) => anthropic.beta.messages.create(params, opts),
+  createMessage: opencode ? agent.createResponsesMessage(opencode) : (params, opts) => anthropic.beta.messages.create(params, opts),
   model: config.AGENT_MODEL,
-  tools: tools.createTools({ anthropic, searchModel: config.SEARCH_MODEL }),
+  tools: tools.createTools({
+    anthropic,
+    searchModel: config.SEARCH_MODEL,
+    ...(opencode ? { responsesSearch: { ...opencode, model: config.AGENT_MODEL } } : {}),
+  }),
   logger,
   defaultTimezone: config.DEFAULT_TIMEZONE,
 })

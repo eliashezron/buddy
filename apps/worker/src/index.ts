@@ -17,6 +17,7 @@ import { createDb, createRepo } from '@wa/db'
 import { createTools } from '@wa/tools'
 import { BotApiClient, botIdFromToken, createTelegramChannel } from '@wa/telegram'
 import { CloudApiClient, createWhatsAppChannel } from '@wa/whatsapp'
+import { createResponsesMessage, type CreateMessage } from '@wa/agent'
 import { createInboundHandler, type Connectors } from './inbound.js'
 
 const config = loadConfigOrExit(envSchema)
@@ -25,7 +26,13 @@ const logger = createLogger({ name: 'worker', level: config.LOG_LEVEL })
 const { db, close: closeDb } = createDb(config.DATABASE_URL)
 const repo = createRepo(db)
 // Vendor must be on zero-retention / no-training terms (CLAUDE.md).
-const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY, timeout: 90_000, maxRetries: 2 })
+const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY ?? 'unused-with-opencode', timeout: 90_000, maxRetries: 2 })
+// The agent's model. LLM_PROVIDER=opencode (development only, refused in production by
+// config validation) runs it on an OpenAI Responses model such as gpt-6-luna instead.
+const createMessage: CreateMessage =
+  config.LLM_PROVIDER === 'opencode'
+    ? createResponsesMessage({ apiKey: config.OPENCODE_API_KEY!, baseUrl: config.OPENCODE_BASE_URL })
+    : (params, opts) => anthropic.beta.messages.create(params, opts)
 const channels: Partial<Record<ChannelName, Channel>> = {
   whatsapp: createWhatsAppChannel({
     client: new CloudApiClient({
@@ -74,9 +81,17 @@ if (config.GOOGLE_CLIENT_ID && config.GOOGLE_CLIENT_SECRET && config.TOKEN_ENCRY
 const handle = createInboundHandler({
   repo,
   channels,
-  createMessage: (params, opts) => anthropic.beta.messages.create(params, opts),
+  createMessage,
   model: config.AGENT_MODEL,
-  tools: createTools({ anthropic, searchModel: config.SEARCH_MODEL, google: Boolean(connectors) }),
+  tools: createTools({
+    anthropic,
+    searchModel: config.SEARCH_MODEL,
+    google: Boolean(connectors),
+    // With the development provider, web search goes through OpenCode as well: no Anthropic calls at all.
+    ...(config.LLM_PROVIDER === 'opencode'
+      ? { responsesSearch: { apiKey: config.OPENCODE_API_KEY!, baseUrl: config.OPENCODE_BASE_URL, model: config.AGENT_MODEL } }
+      : {}),
+  }),
   logger,
   defaultTimezone: config.DEFAULT_TIMEZONE,
   ...(connectors ? { connectors } : {}),
@@ -110,7 +125,7 @@ const maintenance = new Worker(
 )
 maintenance.on('error', (err) => logger.error({ err }, 'maintenance worker error'))
 
-logger.info({ queues: [QUEUES.inbound, QUEUES.maintenance], channels: Object.keys(channels), google: Boolean(connectors), model: config.AGENT_MODEL }, 'worker started')
+logger.info({ queues: [QUEUES.inbound, QUEUES.maintenance], channels: Object.keys(channels), google: Boolean(connectors), model: config.AGENT_MODEL, provider: config.LLM_PROVIDER }, 'worker started')
 
 /** Stay under the usual SIGTERM→SIGKILL window of hosting platforms (often 30 s). */
 const SHUTDOWN_GRACE_MS = 15_000
