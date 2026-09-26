@@ -16,6 +16,8 @@
   },
   "dependencies": {
     "@wa/core": "workspace:*",
-    "fflate": "^0.8.3"
+    "fflate": "^0.8.3",
+    "heic-decode": "^2.1.0",
+    "jpeg-js": "^0.4.4"
   }
 }

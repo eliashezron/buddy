@@ -442,7 +442,7 @@ export function createInboundHandler(deps: InboundDeps) {
     const stopTyping = channel.startTyping(m)
     try {
       const file = await channel.downloadMedia(m, { maxBytes: maxBytesFor(format) })
-      const attachment = toAttachment(file, media.filename ? { filename: media.filename } : {})
+      const attachment = await toAttachment(file, media.filename ? { filename: media.filename } : {})
       await repo.saveAttachment({
         messageId,
         userId: user.id,

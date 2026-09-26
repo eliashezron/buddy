@@ -1,4 +1,5 @@
 import { IMAGE_TYPES, type Attachment, type MediaFile } from '@wa/core'
+import { heicToJpeg } from './heic.js'
 import { docxText, OfficeFileError, pptxText, xlsxText } from './office.js'
 
 /**
@@ -14,7 +15,7 @@ export const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
 /** ~25k tokens of extracted text; longer files are cut, and the model is told. */
 export const MAX_TEXT_CHARS = 100_000
 
-export type FileFormat = 'image' | 'pdf' | 'text' | 'docx' | 'xlsx' | 'pptx'
+export type FileFormat = 'image' | 'heic' | 'pdf' | 'text' | 'docx' | 'xlsx' | 'pptx'
 
 export class UnsupportedFileError extends Error {
   override name = 'UnsupportedFileError'
@@ -29,6 +30,10 @@ export class UnsupportedFileError extends Error {
 const OOXML = 'application/vnd.openxmlformats-officedocument'
 const BY_MIME: Record<string, FileFormat> = {
   'application/pdf': 'pdf',
+  'image/heic': 'heic',
+  'image/heif': 'heic',
+  'image/heic-sequence': 'heic',
+  'image/heif-sequence': 'heic',
   [`${OOXML}.wordprocessingml.document`]: 'docx',
   [`${OOXML}.spreadsheetml.sheet`]: 'xlsx',
   [`${OOXML}.presentationml.presentation`]: 'pptx',
@@ -55,6 +60,8 @@ const BY_EXTENSION: Record<string, FileFormat> = {
   png: 'image',
   webp: 'image',
   gif: 'image',
+  heic: 'heic',
+  heif: 'heic',
 }
 const EXTENSION_MIME: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif' }
 
@@ -72,6 +79,7 @@ export function fileFormat(mimeType: string | undefined, filename?: string): Fil
   return (ext && BY_EXTENSION[ext]) || null
 }
 
+/** HEIC is converted to a smaller JPEG first, so it may be larger than a photo sent as is. */
 export function maxBytesFor(format: FileFormat): number {
   return format === 'image' ? MAX_IMAGE_BYTES : MAX_DOCUMENT_BYTES
 }
@@ -97,7 +105,7 @@ function textAttachment(mimeType: string, filename: string | undefined, text: st
 }
 
 /** The file → an attachment for the model. Throws UnsupportedFileError when we can't read it. */
-export function toAttachment(file: MediaFile, opts: { filename?: string } = {}): Attachment {
+export async function toAttachment(file: MediaFile, opts: { filename?: string } = {}): Promise<Attachment> {
   const { filename } = opts
   const format = fileFormat(file.mimeType, filename)
   if (!format) throw new UnsupportedFileError(`unsupported type ${baseMime(file.mimeType) || 'unknown'}`, 'type')
@@ -107,6 +115,15 @@ export function toAttachment(file: MediaFile, opts: { filename?: string } = {}):
   if (format === 'image') {
     const imageMime = (IMAGE_TYPES as readonly string[]).includes(mime) ? mime : EXTENSION_MIME[extensionOf(filename) ?? ''] ?? 'image/jpeg'
     return { kind: 'image', mimeType: imageMime, data: file.data, ...named }
+  }
+  if (format === 'heic') {
+    let jpeg: Uint8Array
+    try {
+      jpeg = await heicToJpeg(file.data)
+    } catch {
+      throw new UnsupportedFileError('not a readable HEIC image', 'unreadable')
+    }
+    return { kind: 'image', mimeType: 'image/jpeg', data: jpeg, ...named }
   }
   if (format === 'pdf') {
     // "%PDF" within the first KB, as readers allow; otherwise the provider would reject it.

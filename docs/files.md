@@ -7,11 +7,21 @@ this receipt to my expenses sheet", "put this meeting in my calendar", "summaris
 | What | How the model sees it | Limit |
 | --- | --- | --- |
 | Photos (JPEG, PNG, WebP, GIF), sent as a photo or as a file | the image itself | 5 MB |
+| iPhone photos in HEIC/HEIF, sent as a file | converted to JPEG, long edge ≤ 2048 px | 10 MB |
 | PDF | the document itself: text, and scans/charts as pages | 10 MB |
 | Word (.docx), Excel (.xlsx), PowerPoint (.pptx) | text we extract (`packages/files`) | 10 MB, 100k characters |
 | Text, CSV, TSV, Markdown, JSON, XML, YAML | the text | 10 MB, 100k characters |
 
-Anything else (old .doc/.xls, HEIC, zip, video) gets a short reply listing what works.
+Anything else (old .doc/.xls, zip, video) gets a short reply listing what works.
+
+**HEIC:** iPhones shoot HEIC, but WhatsApp and Telegram convert a picture sent as a *photo*
+to JPEG. HEIC arrives only when it's sent as a *file* (from the Files app, or Telegram's
+"send as file"). Neither model API accepts HEIC, so `packages/files/src/heic.ts` decodes
+it with `heic-decode` (libheif compiled to WebAssembly, no native binaries), downscales
+it, and encodes a JPEG with `jpeg-js`. A 12 MP photo takes about 0.1 s. libheif-js is
+LGPL-3.0 and is used unmodified as a dependency; HEVC decoding may carry patent
+obligations in some jurisdictions, so check this before a commercial launch.
+
 Excel: every sheet by name, rows as tab-separated values, date cells as YYYY-MM-DD, up to
 2,000 rows a sheet. Longer text is cut, and the model is told it only sees the first part.
 
@@ -19,7 +29,7 @@ Excel: every sheet by name, rows as tab-separated values, date cells as YYYY-MM-
 photo / document message
   → worker, under the user's lock: store the message; type supported? size under the limit?
   → channel.downloadMedia (Telegram getFile; WhatsApp media id → short-lived URL → download)
-  → toAttachment (packages/files): images and PDFs as they are, Office and text files → text
+  → toAttachment (packages/files): images and PDFs as they are, HEIC → JPEG, Office and text files → text
   → attachments row, expires in 3 hours
   → wait 2.5 s, outside the lock
   → did the user send anything newer (text, voice, photo, file)? then stop: that message
@@ -52,5 +62,6 @@ photo / document message
 2. Send two or three photos at once with one caption: you should get a single reply.
 3. Send a photo with no caption, then type "add this to my expenses sheet".
 4. Send a PDF, a Word or an Excel file and ask for a summary.
-5. Send a .zip, or a photo over 5 MB as a file: you should get the "can't open" or
+5. From an iPhone, send a photo as a file (HEIC) and ask what's in it.
+6. Send a .zip, or a photo over 5 MB as a file: you should get the "can't open" or
    "too large" reply.

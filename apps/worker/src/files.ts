@@ -19,7 +19,7 @@ export const MAX_ATTACHMENTS_IN_CONTEXT = 4
 export const ATTACHMENT_CONTEXT_BYTES = 15 * 1024 * 1024
 
 export const FILE_REPLIES = {
-  type: "I can't open that kind of file yet. I can read photos, PDFs, Word, Excel and PowerPoint files, and text or CSV files.",
+  type: "I can't open that kind of file yet. I can read photos (including iPhone HEIC), PDFs, Word, Excel and PowerPoint files, and text or CSV files.",
   imageTooLarge: 'That photo is over 5 MB, which is more than I can take. Could you send a smaller one?',
   documentTooLarge: 'That file is over 10 MB, which is more than I can take. Could you send a smaller one, or just the pages you need?',
   unreadable: "I couldn't open that file. It may be damaged or password-protected. Could you send another copy, or a PDF?",
