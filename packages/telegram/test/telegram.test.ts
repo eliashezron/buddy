@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createLogger, type InboundMessage } from '@wa/core'
+import { createLogger, MediaTooLargeError, type InboundMessage } from '@wa/core'
 import { createTelegramChannel } from '../src/channel.js'
 import { BotApiClient, FakeTelegramClient, TelegramApiError } from '../src/client.js'
 import { toPlainText, toTelegramHtml } from '../src/format.js'
@@ -261,6 +261,23 @@ describe('Telegram link buttons', () => {
   })
 })
 
+describe('Telegram voice notes', () => {
+  it('parses a voice note with its duration and size', () => {
+    const e = parseTelegramUpdate(fixture('telegram-voice')).events[0]
+    expect(e).toMatchObject({ message: { type: 'audio', media: { kind: 'audio', voice: true, mimeType: 'audio/ogg', durationSec: 6, sizeBytes: 24000 } } })
+  })
+
+  it('downloads media through the channel, refusing oversized files before downloading', async () => {
+    const client = new FakeTelegramClient()
+    client.files.set('F1', new Uint8Array([1, 2, 3]))
+    const ch = createTelegramChannel({ client, botId: '9' })
+    const voice = { channel: 'telegram', id: 'x', from: '555', timestamp: 1, type: 'audio', platformMessageId: '1', media: { kind: 'audio', id: 'F1', mimeType: 'audio/ogg', sizeBytes: 3 } } satisfies InboundMessage
+    expect(await ch.downloadMedia(voice, { maxBytes: 10 })).toEqual({ data: new Uint8Array([1, 2, 3]), mimeType: 'audio/ogg' })
+    await expect(ch.downloadMedia({ ...voice, media: { ...voice.media, sizeBytes: 50 } }, { maxBytes: 10 })).rejects.toBeInstanceOf(MediaTooLargeError)
+    expect(client.calls.filter((c) => c.method === 'downloadFile')).toHaveLength(1)
+  })
+})
+
 describe('BotApiClient', () => {
   const token = '123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawQ'
   function fakeFetch(responses: { status: number; body: unknown }[]) {
@@ -296,6 +313,26 @@ describe('BotApiClient', () => {
     expect(f.calls[1]!.body).toMatchObject({ allowed_updates: ['message', 'callback_query'] })
     await client.setWebhook('https://x/telegram/webhook', 'secret')
     expect(f.calls[2]!.body).toMatchObject({ allowed_updates: ['message', 'callback_query'] })
+  })
+
+  it('downloads a file via getFile, and never puts the token in errors', async () => {
+    const calls: string[] = []
+    const impl = (async (url: string) => {
+      calls.push(url)
+      if (url.endsWith('/getFile')) return new Response(JSON.stringify({ ok: true, result: { file_path: 'voice/file_7.oga', file_size: 3 } }))
+      return new Response(new Uint8Array([7, 8, 9]))
+    }) as unknown as typeof fetch
+    const client = new BotApiClient({ token, logger, fetch: impl })
+    expect(await client.downloadFile('F1')).toEqual({ data: new Uint8Array([7, 8, 9]), sizeBytes: 3 })
+    expect(calls[1]).toBe(`https://api.telegram.org/file/bot${token}/voice/file_7.oga`)
+    const failing = new BotApiClient({
+      token,
+      logger,
+      fetch: (async (url: string) =>
+        url.endsWith('/getFile') ? new Response(JSON.stringify({ ok: true, result: { file_path: 'x' } })) : new Response('', { status: 404 })) as unknown as typeof fetch,
+    })
+    const err = await failing.downloadFile('F1').catch((e: unknown) => e)
+    expect(String((err as Error).message)).not.toContain(token)
   })
 
   it('honours retry_after on 429, then succeeds', async () => {

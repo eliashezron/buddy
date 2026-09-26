@@ -23,6 +23,8 @@ export interface TelegramClient {
   answerCallbackQuery(callbackId: string, text?: string): Promise<void>
   /** Removes the inline keyboard from one of our messages. */
   removeButtons(chatId: string, messageId: string): Promise<void>
+  /** Downloads a file users sent (e.g. a voice note). The Bot API serves up to 20 MB. */
+  downloadFile(fileId: string): Promise<{ data: Uint8Array; sizeBytes?: number }>
 }
 
 /** Update types we subscribe to: messages, and presses of our inline buttons (approvals). */
@@ -100,6 +102,16 @@ export class BotApiClient implements TelegramClient {
     await this.call('editMessageReplyMarkup', { chat_id: chatId, message_id: Number(messageId), reply_markup: { inline_keyboard: [] } }, { maxAttempts: 1 })
   }
 
+  async downloadFile(fileId: string) {
+    const file = z.looseObject({ file_path: z.string().optional(), file_size: z.number().optional() }).parse(await this.call('getFile', { file_id: fileId }))
+    if (!file.file_path) throw new TelegramApiError(400, 'Bad Request: file is too big to download')
+    // The URL contains the bot token: it is never logged, and errors don't include it.
+    const origin = this.opts.baseUrl ?? 'https://api.telegram.org'
+    const res = await this.fetchImpl(`${origin}/file/bot${this.opts.token}/${file.file_path}`, { signal: AbortSignal.timeout(60_000) })
+    if (!res.ok) throw new TelegramApiError(res.status, `file download failed (HTTP ${res.status})`)
+    return { data: new Uint8Array(await res.arrayBuffer()), ...(file.file_size !== undefined ? { sizeBytes: file.file_size } : {}) }
+  }
+
   /** Long polling. Only works while no webhook is set. */
   async getUpdates(offset: number, timeoutSec: number, signal?: AbortSignal): Promise<unknown[]> {
     const result = await this.call(
@@ -173,6 +185,7 @@ export type TelegramCall =
   | { method: 'sendChatAction'; chatId: string; action: string }
   | { method: 'answerCallbackQuery'; callbackId: string; text?: string }
   | { method: 'removeButtons'; chatId: string; messageId: string }
+  | { method: 'downloadFile'; fileId: string }
 
 /** Records every outbound call. Use in tests and `pnpm replay`; nothing reaches Telegram. */
 export class FakeTelegramClient implements TelegramClient {
@@ -200,6 +213,16 @@ export class FakeTelegramClient implements TelegramClient {
 
   async removeButtons(chatId: string, messageId: string) {
     this.calls.push({ method: 'removeButtons', chatId, messageId })
+  }
+
+  /** Files tests can "download", by file id. */
+  readonly files = new Map<string, Uint8Array>()
+
+  async downloadFile(fileId: string) {
+    this.calls.push({ method: 'downloadFile', fileId })
+    const data = this.files.get(fileId)
+    if (!data) throw new TelegramApiError(400, 'Bad Request: invalid file_id')
+    return { data, sizeBytes: data.length }
   }
 
   get sent() {

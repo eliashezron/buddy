@@ -58,6 +58,10 @@ const baseEnvSchema = z.object({
     .refine((k) => Buffer.from(k, 'base64').length === 32, 'must be 32 bytes, base64 (openssl rand -base64 32)')
     .optional(),
 
+  // Voice notes (PRD F2). Optional: without a key, voice notes get the "not yet" reply.
+  ELEVENLABS_API_KEY: z.string().trim().min(1).optional(),
+  STT_MODEL: z.string().default('scribe_v2'),
+
   DEFAULT_TIMEZONE: z.string().default('Africa/Kampala'),
   MESSAGE_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
 })

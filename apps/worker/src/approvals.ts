@@ -61,13 +61,16 @@ export function createApprovals(deps: ApprovalDeps) {
     user: User,
     pending: { actionId: string; tool: string; input: unknown; card?: { preview: string; title: string } | undefined }[],
     log: Logger,
+    opts: { spokenText?: string } = {},
   ) {
     for (const p of pending) {
       const tool = deps.toolsByName.get(p.tool)
       if (!tool) continue
       // The loop's card (from `describe` when the tool has one); the input-based preview otherwise.
       const text = p.card ?? { preview: tool.preview(p.input), title: title(tool, p.input, tool.name) }
-      const card = { actionId: p.actionId, ...text, approveLabel: tool.approveLabel ?? 'Send' }
+      // From a voice note: show what was heard, so a mis-heard name or amount is caught (PRD F2).
+      const heard = opts.spokenText ? `🎙️ _You said: "${opts.spokenText.length > 300 ? `${opts.spokenText.slice(0, 299)}…` : opts.spokenText}"_\n\n` : ''
+      const card = { actionId: p.actionId, ...text, preview: heard + text.preview, approveLabel: tool.approveLabel ?? 'Send' }
       try {
         const ids = await deps.channelFor(user).sendApproval(user.externalId, card)
         const sentAt = deps.now()

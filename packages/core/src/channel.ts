@@ -4,6 +4,8 @@
  * types, so adding a channel means a parser and a `Channel` implementation.
  */
 
+import type { MediaFile } from './speech.js'
+
 export const CHANNELS = ['whatsapp', 'telegram'] as const
 export type ChannelName = (typeof CHANNELS)[number]
 
@@ -27,7 +29,7 @@ export interface InboundMessage {
   text?: string
   /** Bot command without the slash, e.g. `start` (Telegram). */
   command?: string
-  media?: { kind: string; id: string; mimeType?: string; caption?: string; voice?: boolean }
+  media?: { kind: string; id: string; mimeType?: string; caption?: string; voice?: boolean; durationSec?: number; sizeBytes?: number }
   /** Interactive button/list reply, or template quick-reply button. */
   reply?: { id: string; title: string }
   /** Telegram inline-button press: the callback query to answer. */
@@ -69,6 +71,8 @@ export interface Channel {
    * text already shows it.
    */
   sendLink(to: string, link: LinkButton): Promise<string[]>
+  /** Downloads an inbound message's media (e.g. a voice note). Throws MediaTooLargeError over `maxBytes`. */
+  downloadMedia(message: InboundMessage, opts: { maxBytes: number }): Promise<MediaFile>
 }
 
 export interface LinkButton {

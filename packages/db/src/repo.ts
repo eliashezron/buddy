@@ -66,6 +66,11 @@ export function createRepo(db: Db) {
      * checks `hasCompletedRun`, because a failed attempt that BullMQ retries has
      * already stored the row but not finished the work.
      */
+    /** A voice note's transcript becomes its body, so history reads like typed text. */
+    async setMessageBody(id: string, body: string) {
+      await db.update(messages).set({ body }).where(eq(messages.id, id))
+    },
+
     async insertInboundMessage(input: {
       userId: string
       channel: Channel
