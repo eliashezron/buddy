@@ -18,6 +18,8 @@ export interface WhatsAppClient {
    * downloaded with the same bearer token. Refuses anything over `maxBytes` before downloading.
    */
   downloadMedia(mediaId: string, opts: { maxBytes: number }): Promise<{ data: Uint8Array; mimeType: string }>
+  /** Uploads an OGG/Opus voice note and sends it as an audio message. */
+  sendVoice(to: string, audio: Uint8Array): Promise<{ messageId: string }>
 }
 
 /** Graph reported media larger than the caller allows. */
@@ -120,6 +122,26 @@ export class CloudApiClient implements WhatsAppClient {
     await this.post('/messages', payload)
   }
 
+  async sendVoice(to: string, audio: Uint8Array) {
+    const form = new FormData()
+    form.set('messaging_product', 'whatsapp')
+    form.set('type', 'audio/ogg')
+    form.set('file', new Blob([audio], { type: 'audio/ogg' }), 'reply.ogg')
+    const upload = await this.fetchImpl(`${this.baseUrl}/media`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${this.opts.accessToken}` },
+      body: form,
+      signal: AbortSignal.timeout(60_000),
+    })
+    const uploaded: unknown = await upload.json().catch(() => undefined)
+    if (!upload.ok) throw new GraphApiError(upload.status, undefined, `media upload failed (HTTP ${upload.status})`)
+    const id = z.object({ id: z.string() }).parse(uploaded).id
+    const json = await this.post('/messages', { messaging_product: 'whatsapp', recipient_type: 'individual', to, type: 'audio', audio: { id } })
+    const parsed = sendResponseSchema.safeParse(json)
+    if (!parsed.success) throw new GraphApiError(200, undefined, 'unexpected send response shape')
+    return { messageId: parsed.data.messages[0]!.id }
+  }
+
   async downloadMedia(mediaId: string, opts: { maxBytes: number }) {
     const headers = { Authorization: `Bearer ${this.opts.accessToken}` }
     const infoRes = await this.fetchImpl(`https://graph.facebook.com/${this.opts.graphApiVersion}/${encodeURIComponent(mediaId)}`, {
@@ -176,6 +198,7 @@ export type RecordedCall =
   | { method: 'sendButtons'; to: string; body: string; buttons: { id: string; title: string }[] }
   | { method: 'sendUrlButton'; to: string; body: string; label: string; url: string }
   | { method: 'downloadMedia'; mediaId: string }
+  | { method: 'sendVoice'; to: string; bytes: number }
 
 /** Records every outbound call. Use this in all tests and in `pnpm replay`; nothing hits Graph. */
 export class FakeWhatsAppClient implements WhatsAppClient {
@@ -205,6 +228,11 @@ export class FakeWhatsAppClient implements WhatsAppClient {
 
   /** Media tests can "download", by media id. */
   readonly media = new Map<string, { data: Uint8Array; mimeType: string }>()
+
+  async sendVoice(to: string, audio: Uint8Array) {
+    this.calls.push({ method: 'sendVoice', to, bytes: audio.length })
+    return { messageId: `wamid.FAKE_${++this.seq}` }
+  }
 
   async downloadMedia(mediaId: string, opts: { maxBytes: number }) {
     this.calls.push({ method: 'downloadMedia', mediaId })

@@ -71,6 +71,8 @@ export interface Channel {
    * text already shows it.
    */
   sendLink(to: string, link: LinkButton): Promise<string[]>
+  /** Sends an OGG/Opus voice note (a voice reply). Returns platform message ids. */
+  sendVoice(to: string, audio: MediaFile): Promise<string[]>
   /** Downloads an inbound message's media (e.g. a voice note). Throws MediaTooLargeError over `maxBytes`. */
   downloadMedia(message: InboundMessage, opts: { maxBytes: number }): Promise<MediaFile>
 }

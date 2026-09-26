@@ -57,6 +57,13 @@
       "when": 1790343414468,
       "tag": "0007_sad_yellow_claw",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790432112607,
+      "tag": "0008_wild_hulk",
+      "breakpoints": true
     }
   ]
 }

@@ -284,6 +284,8 @@ export const cases: EvalCase[] = [
     expectTools: ['edit_presentation'],
     forbidTools: ['create_presentation'],
   },
+  { id: 'reply-mode-text', message: 'From now on just reply to me in text, no voice notes please', expectTools: ['set_reply_mode'] },
+  { id: 'reply-mode-voice', message: 'Please always answer me with voice notes', expectTools: ['set_reply_mode'] },
   {
     id: 'not-connected-no-link',
     message: "What's on my calendar today?",

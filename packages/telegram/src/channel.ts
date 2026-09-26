@@ -69,6 +69,9 @@ export function createTelegramChannel({ client, botId, onTypingError = () => {} 
         return channel.sendText(chatId, link.text.includes(link.url) ? link.text : `${link.text}\n${link.url}`)
       }
     },
+    async sendVoice(chatId, audio) {
+      return [`${botId}:${chatId}:${(await client.sendVoice(chatId, audio.data)).messageId}`]
+    },
     async downloadMedia(message, { maxBytes }) {
       if (!message.media) throw new Error('message has no media')
       // Check the size Telegram reported before downloading anything.

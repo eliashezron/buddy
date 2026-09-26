@@ -26,6 +26,8 @@ export const users = pgTable('users', {
   timezone: text('timezone').notNull(),
   /** Drives the 24 h customer service window check before every send. */
   lastInboundAt: timestamp('last_inbound_at', { withTimezone: true }),
+  /** match (voice note → voice reply) | text | voice. See ReplyMode in @wa/core. */
+  replyMode: text('reply_mode').notNull().default('match'),
   createdAt: createdAt(),
 }, (t) => [uniqueIndex('users_channel_external_id_key').on(t.channel, t.externalId)])
 

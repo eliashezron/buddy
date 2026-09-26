@@ -21,6 +21,16 @@ export interface SpeechToText {
   transcribe(audio: MediaFile, opts?: { signal?: AbortSignal }): Promise<Transcript>
 }
 
+/** Voice replies (PRD F3): text → an OGG/Opus voice note. */
+export interface TextToSpeech {
+  /** `language` is an ISO 639 code from the transcript, when the user spoke. */
+  synthesize(text: string, opts?: { language?: string; signal?: AbortSignal }): Promise<MediaFile>
+}
+
+/** How the assistant replies: in the user's mode (voice note → voice), or always text / voice. */
+export const REPLY_MODES = ['match', 'text', 'voice'] as const
+export type ReplyMode = (typeof REPLY_MODES)[number]
+
 /** A voice note the assistant won't process (too long, too large, unsupported). */
 export class MediaTooLargeError extends Error {
   override name = 'MediaTooLargeError'

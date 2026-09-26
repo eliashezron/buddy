@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "reply_mode" text DEFAULT 'match' NOT NULL;

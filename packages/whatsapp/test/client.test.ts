@@ -65,6 +65,19 @@ describe('CloudApiClient', () => {
     expect(calls.some((c) => c.url.endsWith('/big'))).toBe(false)
   })
 
+  it('sends a voice note: uploads the OGG, then an audio message with the media id', async () => {
+    const calls: { url: string; init: RequestInit }[] = []
+    const impl = (async (url: string, init: RequestInit) => {
+      calls.push({ url, init })
+      return new Response(JSON.stringify(url.endsWith('/media') ? { id: 'MEDIA9' } : { messages: [{ id: 'wamid.VOICE' }] }))
+    }) as unknown as typeof fetch
+    const client = new CloudApiClient({ ...base, fetch: impl })
+    expect(await client.sendVoice('256770000001', new Uint8Array([1, 2]))).toEqual({ messageId: 'wamid.VOICE' })
+    expect(calls[0]!.url).toBe('https://graph.facebook.com/v23.0/PNID/media')
+    expect((calls[0]!.init.body as FormData).get('type')).toBe('audio/ogg')
+    expect(JSON.parse(String(calls[1]!.init.body))).toMatchObject({ to: '256770000001', type: 'audio', audio: { id: 'MEDIA9' } })
+  })
+
   it('retries 5xx and 429, then succeeds', async () => {
     const f = fakeFetch([
       { status: 500, body: {} },
